@@ -1,0 +1,16 @@
+{
+  "name": "dnos-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dn.os Desktop — casca Tauri do dn.os (carrega a instância web; notificações nativas, deep link, atualização automática)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:mac": "tauri build --target universal-apple-darwin",
+    "icons": "tauri icon design/icone-1024.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

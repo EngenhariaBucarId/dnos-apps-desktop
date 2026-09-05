@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dn.os</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0B0F1A; --fg:#E8EAF2; --muted:#8A90A6; --primary:#3D61FF; }
+  html, body { height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:Inter, -apple-system, system-ui, sans-serif; }
+  body { display:grid; place-items:center; -webkit-user-select:none; user-select:none; }
+  .caixa { text-align:center; max-width:34rem; padding:2rem; }
+  .marca { font-family: "JetBrains Mono", ui-monospace, monospace; font-size:1.6rem; letter-spacing:.02em; }
+  .marca b { color:var(--primary); }
+  .pulso { width:8px; height:8px; border-radius:50%; background:var(--primary); display:inline-block; margin:0 .4rem; animation:p 1.2s ease-in-out infinite; }
+  @keyframes p { 50% { opacity:.25; transform:scale(.7); } }
+  p { color:var(--muted); line-height:1.5; margin:.75rem 0 0; }
+  button { margin-top:1.25rem; border:1px solid rgba(61,97,255,.5); background:rgba(61,97,255,.12); color:var(--fg); padding:.6rem 1.1rem; border-radius:999px; font:inherit; cursor:pointer; }
+  button:hover { background:rgba(61,97,255,.22); }
+  #offline { display:none; }
+  .rodape { position:fixed; bottom:1rem; left:0; right:0; text-align:center; color:var(--muted); font-size:.75rem; font-family: ui-monospace, monospace; }
+  @media (prefers-reduced-motion: reduce) { .pulso { animation:none; } }
+</style>
+</head>
+<body>
+  <div class="caixa">
+    <div class="marca"><b>.</b>dn.os <span class="pulso" aria-hidden="true"></span></div>
+    <div id="carregando"><p>Abrindo o seu dn.os…</p></div>
+    <div id="offline">
+      <p>Sem conexão com <span id="host">o dn.os</span>. O app precisa de internet para abrir.</p>
+      <button id="tentar" type="button">Tentar de novo</button>
+    </div>
+  </div>
+  <div class="rodape" id="rodape"></div>
+<script>
+  // Esta página é a única coisa que mora dentro da casca. Ela confere se a
+  // instância responde e navega para ela. Sem rede, mostra o aviso e espera.
+  // A URL vem da casca (window.__DNOS_URL__); o padrão é a instância da dn.ia.
+  const URL_INSTANCIA = (window.__DNOS_URL__ || "https://dnos.dnia.ai").replace(/\/+$/, "");
+  const host = new URL(URL_INSTANCIA).host;
+  document.getElementById("host").textContent = host;
+  document.getElementById("rodape").textContent = host + " · dn.os Desktop " + ((window.__DNOS_DESKTOP__ || {}).versao || "");
+
+  const carregando = document.getElementById("carregando");
+  const offline = document.getElementById("offline");
+
+  async function alcancavel() {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      // no-cors: só interessa se o servidor respondeu, não o corpo.
+      await fetch(URL_INSTANCIA + "/?desktop=1&_=" + Date.now(), { mode: "no-cors", cache: "no-store", signal: ctrl.signal });
+      return true;
+    } catch { return false; }
+    finally { clearTimeout(t); }
+  }
+
+  async function ir() {
+    carregando.style.display = ""; offline.style.display = "none";
+    if (await alcancavel()) { location.replace(URL_INSTANCIA + "/"); return; }
+    carregando.style.display = "none"; offline.style.display = "";
+  }
+
+  document.getElementById("tentar").addEventListener("click", ir);
+  window.addEventListener("online", ir);
+  ir();
+</script>
+</body>
+</html>

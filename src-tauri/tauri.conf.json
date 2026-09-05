@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "dn.os",
+  "version": "0.1.0",
+  "identifier": "ai.dnia.dnos",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null,
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Productivity",
+    "shortDescription": "dn.os — humanos e agentes no mesmo time",
+    "longDescription": "O dn.os no seu computador: chat com os super agentes, canais, tela do agente ao vivo e notificações nativas.",
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "entitlements": null,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "O dn.os usa o microfone para mensagens de áudio no chat.",
+        "NSCameraUsageDescription": "O dn.os pode usar a câmera para enviar imagens no chat."
+      }
+    },
+    "windows": {
+      "nsis": {
+        "languages": ["PortugueseBR", "English"],
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["dnos"]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg0OTAxMDIwNDhFNkU2NgpSV1JtYm80RUFnRkpDUGt1OVlLS1dxNlE5aTBtYUpGaWtRQWVoOTBXOHJkOUI2RG14WHdOKzV0Zgo=",
+      "endpoints": [
+        "https://github.com/EngenhariaBucarId/dnos-apps-desktop/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/schemas/
+*.log
+.DS_Store
+# chave PRIVADA do updater nunca entra no repo (fica em GitHub Secrets e no cofre)
+*.key
+*.key.pub
