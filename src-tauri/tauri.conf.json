@@ -11,7 +11,9 @@
     "windows": [],
     "security": {
       "csp": null,
-      "capabilities": ["default"]
+      "capabilities": [
+        "default"
+      ]
     }
   },
   "bundle": {
@@ -29,16 +31,14 @@
     "shortDescription": "dn.os — humanos e agentes no mesmo time",
     "longDescription": "O dn.os no seu computador: chat com os super agentes, canais, tela do agente ao vivo e notificações nativas.",
     "macOS": {
-      "minimumSystemVersion": "12.0",
-      "entitlements": null,
-      "infoPlist": {
-        "NSMicrophoneUsageDescription": "O dn.os usa o microfone para mensagens de áudio no chat.",
-        "NSCameraUsageDescription": "O dn.os pode usar a câmera para enviar imagens no chat."
-      }
+      "minimumSystemVersion": "12.0"
     },
     "windows": {
       "nsis": {
-        "languages": ["PortugueseBR", "English"],
+        "languages": [
+          "PortugueseBR",
+          "English"
+        ],
         "installMode": "currentUser"
       }
     }
@@ -46,7 +46,9 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["dnos"]
+        "schemes": [
+          "dnos"
+        ]
       }
     },
     "updater": {

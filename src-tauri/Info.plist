@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Mesclado pelo Tauri no Info.plist do app. Sem estas chaves o macOS
+       nega microfone e câmera sem nem perguntar. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>O dn.os usa o microfone para mensagens de áudio no chat.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>O dn.os pode usar a câmera para enviar imagens no chat.</string>
+</dict>
+</plist>
