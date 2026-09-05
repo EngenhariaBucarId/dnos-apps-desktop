@@ -1,6 +1,6 @@
 [package]
 name = "dnos-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "dn.os Desktop — casca do dn.os para Mac e Windows"
 authors = ["dn.ia"]
 edition = "2021"

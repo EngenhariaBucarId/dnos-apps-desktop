@@ -10,7 +10,7 @@
 //! O conteúdo é o app web: quando o dn.os publica, a casca mostra a versão
 //! nova sem reinstalar. A casca só volta a ser distribuída quando ela mesma muda.
 
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 const URL_PADRAO: &str = "https://dnos.dnia.ai";
@@ -63,7 +63,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.1.1" };
+  window.__DNOS_DESKTOP__ = { versao: "0.1.2" };
 })();
 "#;
 
@@ -183,6 +183,21 @@ pub fn run() {
                     false
                 })
                 .build()?;
+
+            // Badge de não lidas no ícone: a página emite `dnos://badge` com o
+            // número e a casca marca o dock / barra de tarefas. Feito aqui, em
+            // Rust, porque o caminho pela API JavaScript dependia de versão e
+            // permissão e não apareceu (05/09).
+            let handle_badge = app.handle().clone();
+            app.listen_any("dnos://badge", move |evento| {
+                let n: u64 = serde_json::from_str::<serde_json::Value>(evento.payload())
+                    .ok()
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                    .unwrap_or(0);
+                if let Some(w) = handle_badge.get_webview_window("main") {
+                    let _ = w.set_badge_count(if n > 0 { Some(n as i64) } else { None });
+                }
+            });
 
             // Deep link com o app já aberto (macOS entrega por aqui).
             let handle = app.handle().clone();
