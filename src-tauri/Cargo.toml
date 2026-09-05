@@ -1,6 +1,6 @@
 [package]
 name = "dnos-desktop"
-version = "0.1.2"
+version = "0.2.0"
 description = "dn.os Desktop — casca do dn.os para Mac e Windows"
 authors = ["dn.ia"]
 edition = "2021"
@@ -23,6 +23,10 @@ tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
+# Meu Chrome: WebSocket até a VPS e TCP local até o Chrome da pessoa
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "macros", "rt-multi-thread"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

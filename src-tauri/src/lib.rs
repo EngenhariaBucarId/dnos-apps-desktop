@@ -13,6 +13,8 @@
 use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
+mod meu_chrome;
+
 const URL_PADRAO: &str = "https://dnos.dnia.ai";
 
 /// URL da instância: `DNOS_URL` no ambiente vence o padrão da dn.ia.
@@ -63,7 +65,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.1.2" };
+  window.__DNOS_DESKTOP__ = { versao: "0.2.0", meuChrome: true };
 })();
 "#;
 
@@ -199,6 +201,10 @@ pub fn run() {
                 }
             });
 
+            // Meu Chrome (fase 2): a página liga/desliga por evento; a casca
+            // abre o Chrome com perfil próprio e mantém a ponte com a VPS.
+            meu_chrome::instalar(app.handle());
+
             // Deep link com o app já aberto (macOS entrega por aqui).
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |evento| {
@@ -218,8 +224,16 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("erro ao iniciar o dn.os Desktop");
+        .build(tauri::generate_context!())
+        .expect("erro ao iniciar o dn.os Desktop")
+        .run(|app, evento| {
+            // Fechou o app: o Chrome do dn.os fecha junto e a ponte cai.
+            if let tauri::RunEvent::Exit = evento {
+                if let Some(estado) = app.try_state::<meu_chrome::Compartilhado>() {
+                    meu_chrome::parar(app, &estado, "o dn.os fechou");
+                }
+            }
+        });
 }
 
 #[cfg(test)]
