@@ -98,7 +98,7 @@ fn emitir(app: &AppHandle, e: Estado) {
 
 /// Diário do Meu Chrome: `<Logs>/ai.dnia.dnos/meu-chrome.log` (no Mac,
 /// ~/Library/Logs/ai.dnia.dnos/). Só texto curto, sem token.
-fn registrar(app: &AppHandle, linha: &str) {
+pub fn registrar(app: &AppHandle, linha: &str) {
     use std::io::Write;
     if let Ok(dir) = app.path().app_log_dir() {
         let _ = std::fs::create_dir_all(&dir);

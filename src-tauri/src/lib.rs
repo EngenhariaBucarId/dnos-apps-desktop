@@ -65,20 +65,25 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.2.2", meuChrome: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.2.3", meuChrome: true };
 })();
 "#;
 
 /// Rodado ao fim de cada carga de página (ver `on_page_load`).
 const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.2.2", meuChrome: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true });
+  // O script inicial rodou nesta página? E a ponte do Tauri chegou?
+  const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.2.3", meuChrome: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
-  if (!window.__TAURI__ && location.protocol.startsWith("http")) {
+  let recarregou = false;
+  if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
     try {
-      if (!sessionStorage.getItem("dnos-recarregou")) { sessionStorage.setItem("dnos-recarregou", "1"); location.reload(); }
+      if (!sessionStorage.getItem("dnos-recarregou")) { sessionStorage.setItem("dnos-recarregou", "1"); recarregou = true; }
     } catch {}
   }
+  try { if (temTauri) window.__TAURI__.event.emit("dnos://diario", { pagina: location.pathname, tinhaFlag, temTauri, recarregou }); } catch {}
+  if (recarregou) setTimeout(() => location.reload(), 50);
 })();
 "#;
 
@@ -228,6 +233,13 @@ pub fn run() {
             // Meu Chrome (fase 2): a página liga/desliga por evento; a casca
             // abre o Chrome com perfil próprio e mantém a ponte com a VPS.
             meu_chrome::instalar(app.handle());
+
+            // Diário: a página conta como cada carga chegou (script inicial
+            // rodou? ponte do Tauri presente?) — vai para meu-chrome.log.
+            let handle_diario = app.handle().clone();
+            app.listen_any("dnos://diario", move |evento| {
+                meu_chrome::registrar(&handle_diario, &format!("carga: {}", evento.payload()));
+            });
 
             // Deep link com o app já aberto (macOS entrega por aqui).
             let handle = app.handle().clone();
