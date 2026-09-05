@@ -65,14 +65,14 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.2.1", meuChrome: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.2.2", meuChrome: true };
 })();
 "#;
 
 /// Rodado ao fim de cada carga de página (ver `on_page_load`).
 const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.2.1", meuChrome: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.2.2", meuChrome: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   if (!window.__TAURI__ && location.protocol.startsWith("http")) {
     try {

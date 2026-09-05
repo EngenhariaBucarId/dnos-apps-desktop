@@ -92,7 +92,21 @@ pub fn instalar(app: &AppHandle) {
 }
 
 fn emitir(app: &AppHandle, e: Estado) {
+    registrar(app, &format!("estado={} porta={:?} perfil={:?} motivo={:?}", e.estado, e.porta, e.perfil, e.motivo));
     let _ = app.emit("dnos://meu-chrome", e);
+}
+
+/// Diário do Meu Chrome: `<Logs>/ai.dnia.dnos/meu-chrome.log` (no Mac,
+/// ~/Library/Logs/ai.dnia.dnos/). Só texto curto, sem token.
+fn registrar(app: &AppHandle, linha: &str) {
+    use std::io::Write;
+    if let Ok(dir) = app.path().app_log_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("meu-chrome.log")) {
+            let agora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let _ = writeln!(f, "{agora} {linha}");
+        }
+    }
 }
 
 pub fn parar(app: &AppHandle, estado: &Compartilhado, motivo: &str) {
@@ -104,6 +118,12 @@ pub fn parar(app: &AppHandle, estado: &Compartilhado, motivo: &str) {
                 let _ = ch.kill();
                 let _ = ch.wait();
             }
+        }
+        // O Chrome pode ter se relançado (o filho que abrimos já saiu): fecha
+        // pelo diretório de dados, que é só dele.
+        #[cfg(not(windows))]
+        if let Ok(dados) = app.path().app_data_dir() {
+            let _ = Command::new("pkill").arg("-f").arg(format!("user-data-dir={}", dados.join("chrome-dnos").display())).status();
         }
         emitir(app, Estado { estado: "desligado", porta: None, perfil: None, motivo: Some(motivo.into()) });
     }
@@ -155,7 +175,7 @@ fn abrir_chrome(app: &AppHandle, porta: u16) -> Result<Child, String> {
 }
 
 async fn esperar_chrome(porta: u16) -> bool {
-    for _ in 0..60 {
+    for _ in 0..120 { // até 30 s: a primeira abertura de um perfil novo é lenta
         if TcpStream::connect(("127.0.0.1", porta)).await.is_ok() {
             return true;
         }
@@ -213,10 +233,12 @@ async fn ligar(app: AppHandle, estado: Compartilhado, pedido: PedidoLigar) {
         return erro(&app, "a VPS não informou a porta".into());
     }
 
+    registrar(&app, &format!("vps pronta: porta={porta} perfil={perfil}; abrindo o Chrome"));
     let chrome = match abrir_chrome(&app, porta) {
         Ok(c) => c,
         Err(e) => return erro(&app, e),
     };
+    registrar(&app, &format!("chrome aberto (pid {}), esperando a porta {porta}", chrome.id()));
     let chrome = Arc::new(Mutex::new(Some(chrome)));
     if !esperar_chrome(porta).await {
         if let Ok(mut c) = chrome.lock() {
@@ -241,6 +263,7 @@ async fn ligar(app: AppHandle, estado: Compartilhado, pedido: PedidoLigar) {
     });
 
     let mut fluxos: HashMap<u32, mpsc::Sender<Vec<u8>>> = HashMap::new();
+    let mut falhas_porta = 0u32;
     let motivo: String = loop {
         tokio::select! {
             _ = cancelado.changed() => break "desligado".into(),
@@ -250,6 +273,7 @@ async fn ligar(app: AppHandle, estado: Compartilhado, pedido: PedidoLigar) {
                     let id = u32::from_be_bytes([b[1], b[2], b[3], b[4]]);
                     match tipo {
                         1 => {
+                            registrar(&app, &format!("fluxo {id} aberto pela VPS"));
                             let (para_tcp, mut da_ws) = mpsc::channel::<Vec<u8>>(256);
                             fluxos.insert(id, para_tcp);
                             let para_ws = para_ws.clone();
@@ -288,15 +312,16 @@ async fn ligar(app: AppHandle, estado: Compartilhado, pedido: PedidoLigar) {
                 Some(Err(e)) => break format!("conexão com a VPS caiu: {e}"),
                 None => break "conexão com a VPS caiu".into(),
             },
-            // O Chrome fechou? (a pessoa fechou a janela)
+            // O Chrome fechou? (a pessoa fechou a janela). Medido pela porta de
+            // depuração, não pelo processo filho: o Chrome pode se relançar e o
+            // filho que abrimos sair na hora, com a janela ainda aberta.
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-                let saiu = chrome.lock().ok()
-                    .map(|mut c| c.as_mut().map(|ch| ch.try_wait().ok().flatten().is_some()).unwrap_or(true))
-                    .unwrap_or(true);
-                if saiu { break "você fechou o Chrome".into(); }
+                if TcpStream::connect(("127.0.0.1", porta)).await.is_ok() { falhas_porta = 0; } else { falhas_porta += 1; }
+                if falhas_porta >= 3 { break "você fechou o Chrome".into(); }
             }
         }
     };
+    registrar(&app, &format!("laço encerrou: {motivo}"));
     drop(fluxos);
     drop(para_ws);
     escritor.abort();
