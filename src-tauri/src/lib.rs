@@ -63,7 +63,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.1.0" };
+  window.__DNOS_DESKTOP__ = { versao: "0.1.1" };
 })();
 "#;
 

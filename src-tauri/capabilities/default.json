@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Janela principal: a página local (carregando / sem conexão) e a instância web do dn.os. A instância remota precisa das mesmas permissões para notificação nativa, deep link e abrir link externo.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "remote": {
     "urls": [
       "https://dnos.dnia.ai/*",
@@ -17,6 +19,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-show",
     "core:window:allow-set-title",
+    "core:window:allow-set-badge-count",
     "notification:default",
     "deep-link:default",
     "opener:allow-open-url",
