@@ -49,13 +49,12 @@ jobs:
           # assinada com esta chave. Gerada com `tauri signer generate`.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Assinatura de código da Apple (opcional até a conta existir):
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Assinatura de código da Apple: NÃO declarar estas variáveis enquanto
+          # não houver conta. Vazias, a action tenta importar um certificado
+          # vazio e o build do Mac falha ("failed to import keychain certificate").
+          # Quando a conta existir, acrescentar aqui:
+          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+          #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID (todos via secrets).
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "dn.os Desktop ${{ github.ref_name }}"
