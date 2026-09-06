@@ -7,23 +7,51 @@
 <style>
   :root { color-scheme: light dark; --bg:#0B0F1A; --fg:#E8EAF2; --muted:#8A90A6; --primary:#3D61FF; }
   html, body { height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:Inter, -apple-system, system-ui, sans-serif; }
-  body { display:grid; place-items:center; -webkit-user-select:none; user-select:none; }
+  body { display:grid; place-items:center; -webkit-user-select:none; user-select:none; overflow:hidden; }
   .caixa { text-align:center; max-width:34rem; padding:2rem; }
-  .marca { font-family: "JetBrains Mono", ui-monospace, monospace; font-size:1.6rem; letter-spacing:.02em; }
+
+  /* Palco: a marca no centro e os 8 agentes chegando em roda ao redor dela. */
+  .palco { position:relative; width:312px; height:312px; margin:0 auto; transition:opacity .4s; }
+  .palco.parado { opacity:.45; }
+  .palco.parado .anel, .palco.parado .agente img { animation-play-state:paused; }
+  .anel { position:absolute; inset:0; animation:orbita 40s linear infinite; }
+  .anel::before { content:""; position:absolute; inset:34px; border-radius:50%; border:1px solid rgba(61,97,255,.14);
+    box-shadow:0 0 60px rgba(61,97,255,.10) inset, 0 0 48px rgba(61,97,255,.06); }
+  .agente { position:absolute; top:50%; left:50%; width:54px; height:54px; margin:-27px 0 0 -27px;
+    transform:rotate(var(--a)) translate(122px) rotate(calc(-1 * var(--a))); }
+  .agente .bola { width:100%; height:100%; opacity:0; transform:scale(.3);
+    animation:chega .55s cubic-bezier(.2,.9,.3,1.2) both; animation-delay:calc(var(--i) * 95ms + 120ms); }
+  .agente img { display:block; width:100%; height:100%; border-radius:50%;
+    filter:drop-shadow(0 6px 14px rgba(0,0,0,.55)) drop-shadow(0 0 10px rgba(61,97,255,.18));
+    animation:contra 40s linear infinite; }
+  .marca { position:absolute; inset:0; display:grid; place-items:center;
+    font-family:"JetBrains Mono", ui-monospace, monospace; font-size:1.6rem; letter-spacing:.02em; }
   .marca b { color:var(--primary); }
-  .pulso { width:8px; height:8px; border-radius:50%; background:var(--primary); display:inline-block; margin:0 .4rem; animation:p 1.2s ease-in-out infinite; }
+  .pulso { position:absolute; left:50%; top:calc(50% + 1.5rem); width:8px; height:8px; margin-left:-4px; border-radius:50%; background:var(--primary); animation:p 1.2s ease-in-out infinite; }
+
+  @keyframes orbita { to { transform:rotate(360deg); } }
+  @keyframes contra { to { transform:rotate(-360deg); } }   /* mantém os rostos em pé enquanto a roda gira */
+  @keyframes chega { from { opacity:0; transform:scale(.3); } to { opacity:1; transform:scale(1); } }
   @keyframes p { 50% { opacity:.25; transform:scale(.7); } }
+
   p { color:var(--muted); line-height:1.5; margin:.75rem 0 0; }
   button { margin-top:1.25rem; border:1px solid rgba(61,97,255,.5); background:rgba(61,97,255,.12); color:var(--fg); padding:.6rem 1.1rem; border-radius:999px; font:inherit; cursor:pointer; }
   button:hover { background:rgba(61,97,255,.22); }
   #offline { display:none; }
   .rodape { position:fixed; bottom:1rem; left:0; right:0; text-align:center; color:var(--muted); font-size:.75rem; font-family: ui-monospace, monospace; }
-  @media (prefers-reduced-motion: reduce) { .pulso { animation:none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .pulso, .anel, .agente img { animation:none; }
+    .agente .bola { animation:chega .3s ease-out both; animation-delay:0s; }
+  }
+  @media (max-height: 420px) { .palco { transform:scale(.7); margin:-40px auto; } }
 </style>
 </head>
 <body>
   <div class="caixa">
-    <div class="marca"><b>.</b>dn.os <span class="pulso" aria-hidden="true"></span></div>
+    <div class="palco" id="palco" aria-hidden="true">
+      <div class="anel" id="anel"></div>
+      <div class="marca"><span><b>.</b>dn.os</span><span class="pulso"></span></div>
+    </div>
     <div id="carregando"><p>Abrindo o seu dn.os…</p></div>
     <div id="offline">
       <p>Sem conexão com <span id="host">o dn.os</span>. O app precisa de internet para abrir.</p>
@@ -40,6 +68,22 @@
   document.getElementById("host").textContent = host;
   document.getElementById("rodape").textContent = host + " · dn.os Desktop " + ((window.__DNOS_DESKTOP__ || {}).versao || "");
 
+  // Os 8 agentes do time (ui/agentes/*.png, 256 px, recortados em círculo).
+  // Ordem de chegada = ordem da roda, a partir do topo, no sentido horário.
+  const AGENTES = ["lia", "milo", "kira", "malu", "radar", "rock", "sigma", "koringa"];
+  const anel = document.getElementById("anel");
+  AGENTES.forEach((nome, i) => {
+    const el = document.createElement("div");
+    el.className = "agente";
+    el.style.setProperty("--a", (i * 360 / AGENTES.length - 90) + "deg");
+    el.style.setProperty("--i", i);
+    const img = document.createElement("img");
+    img.src = "agentes/" + nome + ".png"; img.alt = ""; img.draggable = false;
+    const bola = document.createElement("div"); bola.className = "bola"; bola.appendChild(img);
+    el.appendChild(bola); anel.appendChild(el);
+  });
+
+  const palco = document.getElementById("palco");
   const carregando = document.getElementById("carregando");
   const offline = document.getElementById("offline");
 
@@ -55,9 +99,9 @@
   }
 
   async function ir() {
-    carregando.style.display = ""; offline.style.display = "none";
+    carregando.style.display = ""; offline.style.display = "none"; palco.classList.remove("parado");
     if (await alcancavel()) { location.replace(URL_INSTANCIA + "/"); return; }
-    carregando.style.display = "none"; offline.style.display = "";
+    carregando.style.display = "none"; offline.style.display = "block"; palco.classList.add("parado");
   }
 
   document.getElementById("tentar").addEventListener("click", ir);
