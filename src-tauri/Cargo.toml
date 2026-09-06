@@ -1,6 +1,6 @@
 [package]
 name = "dnos-desktop"
-version = "0.5.1"
+version = "0.5.2"
 description = "dn.os Desktop — casca do dn.os para Mac e Windows"
 authors = ["dn.ia"]
 edition = "2021"
@@ -30,6 +30,8 @@ futures-util = "0.3"
 # Aprenda comigo: voz para notas (microfone) e WAV para a transcrição
 cpal = "0.15"
 hound = "3"
+# Barra do Chrome: fotos dos agentes embutidas como data URI
+base64 = "0.22"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
