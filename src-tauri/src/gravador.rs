@@ -324,8 +324,9 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
                         let url = info["url"].as_str().unwrap_or("").to_string();
                         ultima_url.insert(sid.to_string(), url.clone());
                         // As abas que já estavam abertas não são passos; aba nova durante a gravação é.
+                        // Aba em branco (about:blank, sem URL) não vira passo: o navegar dela chega logo depois.
                         if agora_ms() - inicio < 1500 { sessoes_iniciais += 1; }
-                        else {
+                        else if !url.is_empty() && url != "about:blank" {
                             passos.push(json!({ "n": passos.len() + 1, "t": "aba", "hora": agora_ms(), "url": url, "titulo": info["title"] }));
                         }
                     }
@@ -337,7 +338,23 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
                         if ultima_url.get(&sid).map(|u| u == &url).unwrap_or(false) { continue; }
                         ultima_url.insert(sid, url.clone());
                         if agora_ms() - inicio < 1500 { continue; }
+                        if url.is_empty() || url == "about:blank" { continue; }
+                        // Navegação logo depois de "aba nova" na mesma URL: é a mesma coisa, funde.
+                        if let Some(ult) = passos.last_mut() {
+                            if ult["t"] == "aba" && (ult["url"] == json!(url) || agora_ms() - ult["hora"].as_u64().unwrap_or(0) < 3000) {
+                                ult["url"] = json!(url); continue;
+                            }
+                        }
                         passos.push(json!({ "n": passos.len() + 1, "t": "navegar", "hora": agora_ms(), "url": url }));
+                        // Um quadro da página nova, quando a última foto já ficou para trás.
+                        if let Some(sid) = sessao.as_deref() {
+                            if agora_ms() - ultima_foto_ms > 1200 && passos.len() <= 80 {
+                                ultima_foto_ms = agora_ms();
+                                let idx = passos.len() - 1;
+                                let rid = mandar("Page.captureScreenshot", json!({ "format": "jpeg", "quality": 45 }), Some(sid));
+                                fotos_pendentes.insert(rid, idx);
+                            }
+                        }
                     }
                     "Runtime.bindingCalled" => {
                         if v["params"]["name"].as_str() != Some("__dnosGravador") { continue; }
