@@ -46,6 +46,13 @@ pub struct MeuChrome {
     ligado: Option<Sessao>,
 }
 
+impl MeuChrome {
+    /// Porta do Chrome da pessoa quando a ponte está ligada (o gravador usa).
+    pub fn porta_ligada(&self) -> Option<u16> {
+        self.ligado.as_ref().map(|s| s.porta)
+    }
+}
+
 struct Sessao {
     porta: u16,
     perfil: String,
