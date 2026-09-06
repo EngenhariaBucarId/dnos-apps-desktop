@@ -71,7 +71,7 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>) -> Result<(),
     stream.play().map_err(|e| format!("iniciando o microfone: {e}"))?;
 
     // Cortador: a cada 100 ms olha o que chegou e decide onde termina uma fala.
-    let limiar = 0.012f32;                 // RMS acima disso = voz
+    let limiar = 0.009f32;                 // RMS acima disso = voz
     let janela = taxa / 10;                // 100 ms
     let mut fala: Vec<f32> = Vec::new();
     let mut em_fala = false;
@@ -118,6 +118,7 @@ fn enviar(app: &AppHandle, amostras: &[f32], taxa: usize, hora: u64) {
         let _ = w.finalize();
     }
     let b64 = base64_simples(&cur.into_inner());
+    meu_chrome::registrar(app, &format!("voz: trecho de {:.1} s enviado para transcrever ({} KB)", n as f32 / alvo as f32, b64.len() / 1024));
     let _ = app.emit("dnos://gravador/audio", json!({ "wav_base64": b64, "hora": hora, "segundos": n as f32 / alvo as f32 }));
 }
 

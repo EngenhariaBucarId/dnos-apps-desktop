@@ -24,7 +24,7 @@ use crate::meu_chrome;
 /// Desenha e atualiza a barra (shadow DOM, para não brigar com o CSS do site).
 const SCRIPT_DA_BARRA: &str = r#"
 (() => {
-  if (window.__dnosBarra) return;
+  if (window.__dnosBarra) { if (window.__dnosBarraEstado) window.__dnosBarra(window.__dnosBarraEstado); return; }
   let host = null, raiz = null, estado = null;
   const garantir = () => {
     if (host && document.documentElement.contains(host)) return;
@@ -123,11 +123,15 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
         }
     });
     let mut prox: u64 = 1;
-    let mut mandar = |metodo: &str, params: Value, sessao: Option<&str>| {
-        let mut m = json!({ "id": prox, "method": metodo, "params": params }); prox += 1;
+    let mut mandar = |metodo: &str, params: Value, sessao: Option<&str>| -> u64 {
+        let id = prox; prox += 1;
+        let mut m = json!({ "id": id, "method": metodo, "params": params });
         if let Some(s) = sessao { m["sessionId"] = json!(s); }
         let _ = para_cdp.send(m);
+        id
     };
+    let mut scripts: std::collections::HashMap<String, String> = std::collections::HashMap::new(); // sessao -> identifier do script de novo documento
+    let mut pendentes: std::collections::HashMap<u64, String> = std::collections::HashMap::new(); // id da requisicao -> sessao
     mandar("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }), None);
     let mut sessoes: HashSet<String> = HashSet::new();
     let estado_atual = || app.try_state::<Compartilhado>().and_then(|b| b.lock().ok().map(|g| g.atual.clone())).unwrap_or(Value::Null);
@@ -137,12 +141,27 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
         tokio::select! {
             e = rx.recv() => {
                 let Some(e) = e else { break; }; // Meu Chrome desligou
-                let js = format!("window.__dnosBarraEstado = {0}; if (window.__dnosBarra) window.__dnosBarra({0});", if e.is_null() { "{esconder:true}".to_string() } else { e.to_string() });
-                for s in sessoes.iter() { mandar("Runtime.evaluate", json!({ "expression": js }), Some(s)); }
+                let estado_js = if e.is_null() { "{esconder:true}".to_string() } else { e.to_string() };
+                let js = format!("window.__dnosBarraEstado = {0}; if (window.__dnosBarra) window.__dnosBarra({0});", estado_js);
+                // Documento novo (navegação, aba nova) nasce sem o estado: o script
+                // de novo documento leva o estado junto. Troca o anterior de cada aba.
+                let fonte = format!("window.__dnosBarraEstado = {estado_js};{SCRIPT_DA_BARRA}");
+                for s in sessoes.iter() {
+                    mandar("Runtime.evaluate", json!({ "expression": js }), Some(s));
+                    if let Some(id_antigo) = scripts.get(s) { mandar("Page.removeScriptToEvaluateOnNewDocument", json!({ "identifier": id_antigo }), Some(s)); }
+                    let rid = mandar("Page.addScriptToEvaluateOnNewDocument", json!({ "source": fonte }), Some(s));
+                    pendentes.insert(rid, s.clone());
+                }
             }
             m = rx_ws.next() => {
                 let Some(Ok(Message::Text(txt))) = m else { if matches!(m, Some(Ok(_))) { continue; } break; };
                 let Ok(v) = serde_json::from_str::<Value>(&txt) else { continue };
+                if let Some(rid) = v["id"].as_u64() {
+                    if let Some(sid) = pendentes.remove(&rid) {
+                        if let Some(ident) = v["result"]["identifier"].as_str() { scripts.insert(sid, ident.to_string()); }
+                    }
+                    continue;
+                }
                 match v["method"].as_str().unwrap_or("") {
                     "Target.attachedToTarget" => {
                         if v["params"]["targetInfo"]["type"].as_str() != Some("page") { continue; }
@@ -151,12 +170,13 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
                         mandar("Runtime.enable", json!({}), Some(sid));
                         mandar("Runtime.addBinding", json!({ "name": "__dnosBarraCmd" }), Some(sid));
                         mandar("Page.enable", json!({}), Some(sid));
-                        mandar("Page.addScriptToEvaluateOnNewDocument", json!({ "source": SCRIPT_DA_BARRA }), Some(sid));
                         let atual = estado_atual();
                         let prelude = if atual.is_null() { String::new() } else { format!("window.__dnosBarraEstado = {};", atual) };
+                        let rid = mandar("Page.addScriptToEvaluateOnNewDocument", json!({ "source": format!("{prelude}{SCRIPT_DA_BARRA}") }), Some(sid));
+                        pendentes.insert(rid, sid.to_string());
                         mandar("Runtime.evaluate", json!({ "expression": format!("{prelude}{SCRIPT_DA_BARRA}") }), Some(sid));
                     }
-                    "Target.detachedFromTarget" => { if let Some(sid) = v["params"]["sessionId"].as_str() { sessoes.remove(sid); } }
+                    "Target.detachedFromTarget" => { if let Some(sid) = v["params"]["sessionId"].as_str() { sessoes.remove(sid); scripts.remove(sid); } }
                     "Runtime.bindingCalled" => {
                         if v["params"]["name"].as_str() == Some("__dnosBarraCmd") && v["params"]["payload"].as_str() == Some("parar") {
                             // Parar pela barra: a gravação encerra e a revisão abre no dn.os.
