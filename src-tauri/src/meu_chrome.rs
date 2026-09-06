@@ -317,6 +317,18 @@ async fn ligar(app: AppHandle, estado: Compartilhado, pedido: PedidoLigar) {
                     }
                 }
                 Some(Ok(Message::Close(f))) => break f.map(|f| f.reason.to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "a VPS encerrou".into()),
+                // Aviso da VPS: qual agente está agindo neste Chrome e o que faz.
+                Some(Ok(Message::Text(t))) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
+                        if v["t"] == "barra" {
+                            let agente = v["agente"].as_str().unwrap_or("Agente").to_string();
+                            let texto = v["texto"].as_str().unwrap_or("").to_string();
+                            let fim = v["fim"].as_bool().unwrap_or(false);
+                            registrar(&app, &format!("barra: {agente} {}", if fim { "terminou".to_string() } else { texto.clone() }));
+                            crate::barra::agente(&app, &agente, &texto, fim);
+                        }
+                    }
+                }
                 Some(Ok(_)) => {}
                 Some(Err(e)) => break format!("conexão com a VPS caiu: {e}"),
                 None => break "conexão com a VPS caiu".into(),

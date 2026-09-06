@@ -39,9 +39,10 @@ const SCRIPT_DA_BARRA: &str = r#"
       .t{font-weight:600;white-space:nowrap} .s{opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
       .n{opacity:.9;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38%}
       .mic{font-size:13px;opacity:.35;transition:opacity .15s} .mic.on{opacity:1;animation:p .6s infinite}
+      .ag{color:#8fb0ff;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
       button{all:initial;font:600 12px -apple-system,Inter,Segoe UI,sans-serif;color:#fff;background:#E41A11;border-radius:6px;padding:5px 10px;cursor:pointer} button:hover{filter:brightness(1.1)}
       .marca{font:700 12px -apple-system,Inter,sans-serif;letter-spacing:.02em;opacity:.7}
-    </style><div class="b"><span class="dot"></span><span class="marca">dn.os</span><span class="t"></span><span class="s"></span><span class="n"></span><span class="mic" hidden>🎙</span><button hidden>Parar</button></div>`;
+    </style><div class="b"><span class="dot"></span><span class="marca">dn.os</span><span class="t"></span><span class="s"></span><span class="n"></span><span class="ag"></span><span class="mic" hidden>🎙</span><button hidden>Parar</button></div>`;
     document.documentElement.appendChild(host);
     raiz.querySelector("button").addEventListener("click", () => { try { window.__dnosBarraCmd("parar"); } catch {} });
   };
@@ -55,6 +56,7 @@ const SCRIPT_DA_BARRA: &str = r#"
     raiz.querySelector(".n").textContent = e.nota ? "“" + e.nota + "”" : "";
     raiz.querySelector("button").hidden = !e.parar;
     const mic = raiz.querySelector(".mic"); mic.hidden = e.modo !== "grav"; mic.className = "mic" + (e.ouvindo ? " on" : "");
+    raiz.querySelector(".ag").textContent = e.agentes ? "🤖 " + e.agentes : "";
   };
   if (window.__dnosBarraEstado) window.__dnosBarra(window.__dnosBarraEstado);
 })();
@@ -65,11 +67,37 @@ pub struct Barra {
     tx: Option<mpsc::UnboundedSender<Value>>,
     /// Último estado, reaplicado em aba nova.
     atual: Value,
+    /// Estado da gravação (modo grav), se houver — a barra combina com os agentes.
+    gravacao: Value,
+    /// Agentes agindo neste Chrome agora: nome -> o que está fazendo.
+    agentes: std::collections::BTreeMap<String, String>,
+}
+
+/// Recompõe o estado da barra: gravação (se houver) + agentes ativos (com nome).
+fn recompor(g: &mut Barra) -> Value {
+    let linhas: Vec<String> = g.agentes.iter().map(|(n, t)| if t.is_empty() { format!("{n} está usando este Chrome") } else { format!("{n}: {t}") }).collect();
+    let mut e = if g.gravacao.is_object() { g.gravacao.clone() } else if !linhas.is_empty() {
+        json!({ "modo": "agente", "titulo": if g.agentes.len() == 1 { format!("{} está usando seu Chrome", g.agentes.keys().next().unwrap()) } else { format!("{} agentes usando seu Chrome", g.agentes.len()) } })
+    } else { Value::Null };
+    if e.is_object() && !linhas.is_empty() { e["agentes"] = json!(linhas.join("  ·  ")); }
+    g.atual = e.clone();
+    e
+}
+
+/// Um agente começou/continuou (`fim=false`) ou terminou (`fim=true`) de agir neste Chrome.
+pub fn agente(app: &AppHandle, nome: &str, texto: &str, fim: bool) {
+    if let Some(b) = app.try_state::<Compartilhado>() {
+        if let Ok(mut g) = b.lock() {
+            if fim { g.agentes.remove(nome); } else { g.agentes.insert(nome.to_string(), texto.to_string()); }
+            let e = recompor(&mut g);
+            if let Some(tx) = g.tx.as_ref() { let _ = tx.send(e); }
+        }
+    }
 }
 pub type Compartilhado = Arc<Mutex<Barra>>;
 
 pub fn instalar(app: &AppHandle) {
-    let estado: Compartilhado = Arc::new(Mutex::new(Barra { tx: None, atual: Value::Null }));
+    let estado: Compartilhado = Arc::new(Mutex::new(Barra { tx: None, atual: Value::Null, gravacao: Value::Null, agentes: Default::default() }));
     app.manage(estado);
     // A página do dn.os pede diretamente (ex.: "Lia está clicando em Exportar").
     let h = app.clone();
@@ -83,8 +111,12 @@ pub fn instalar(app: &AppHandle) {
 pub fn mostrar(app: &AppHandle, estado: Value) {
     if let Some(b) = app.try_state::<Compartilhado>() {
         if let Ok(mut g) = b.lock() {
-            g.atual = estado.clone();
-            if let Some(tx) = g.tx.as_ref() { let _ = tx.send(estado); }
+            // Gravação manda o estado inteiro (modo grav) ou null ao terminar; os
+            // agentes continuam aparecendo por cima/depois, com nome.
+            if estado["modo"] == "grav" || estado.is_null() { g.gravacao = estado; }
+            else { g.atual = estado.clone(); if let Some(tx) = g.tx.as_ref() { let _ = tx.send(estado); } return; }
+            let e = recompor(&mut g);
+            if let Some(tx) = g.tx.as_ref() { let _ = tx.send(e); }
         }
     }
 }
@@ -94,11 +126,11 @@ pub fn esconder(app: &AppHandle) { mostrar(app, Value::Null); }
 pub fn mesclar(app: &AppHandle, campos: Value) {
     if let Some(b) = app.try_state::<Compartilhado>() {
         if let Ok(mut g) = b.lock() {
-            if !g.atual.is_object() { return; }
-            if let (Some(dest), Some(src)) = (g.atual.as_object_mut(), campos.as_object()) {
+            if !g.gravacao.is_object() { return; }
+            if let (Some(dest), Some(src)) = (g.gravacao.as_object_mut(), campos.as_object()) {
                 for (k, v) in src { dest.insert(k.clone(), v.clone()); }
             }
-            let e = g.atual.clone();
+            let e = recompor(&mut g);
             if let Some(tx) = g.tx.as_ref() { let _ = tx.send(e); }
         }
     }
@@ -117,7 +149,7 @@ pub fn ligar(app: &AppHandle, porta: u16) {
 /// Desliga (o Meu Chrome fechou): o laço termina sozinho quando o canal morre.
 pub fn desligar(app: &AppHandle) {
     if let Some(b) = app.try_state::<Compartilhado>() {
-        if let Ok(mut g) = b.lock() { g.tx = None; g.atual = Value::Null; }
+        if let Ok(mut g) = b.lock() { g.tx = None; g.atual = Value::Null; g.gravacao = Value::Null; g.agentes.clear(); }
     }
 }
 
