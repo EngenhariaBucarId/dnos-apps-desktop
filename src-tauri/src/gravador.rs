@@ -76,7 +76,7 @@ struct Ativa {
     id: String,
     passos: usize,
     notas: mpsc::UnboundedSender<Value>,
-    parar: mpsc::UnboundedSender<Option<String>>,
+    parar: mpsc::UnboundedSender<(Option<String>, Option<String>)>, // (critério, nome)
 }
 
 pub type Compartilhado = Arc<Mutex<Gravador>>;
@@ -129,8 +129,9 @@ pub fn instalar(app: &AppHandle) {
     app.listen_any("dnos://gravador/parar", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
         let criterio = v["criterio"].as_str().map(|s| s.to_string());
+        let nome = v["nome"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string());
         if let Ok(g) = e.lock() {
-            if let Some(a) = g.ativa.as_ref() { let _ = a.parar.send(criterio); }
+            if let Some(a) = g.ativa.as_ref() { let _ = a.parar.send((criterio, nome)); }
         }
     });
 
@@ -179,14 +180,38 @@ pub fn instalar(app: &AppHandle) {
 }
 
 /// GET http://127.0.0.1:<porta>/json/version sem dependência de HTTP: uma
-/// requisição crua basta para o Chrome.
+/// requisição crua basta para o Chrome. Lê pelo Content-Length: o servidor
+/// do DevTools NÃO fecha a conexão (ignora `Connection: close`), e esperar
+/// EOF travava até o Chrome morrer — foi o "reset by peer" de 06/09.
 async fn url_do_browser(porta: u16) -> Result<String, String> {
     let mut tcp = TcpStream::connect(("127.0.0.1", porta)).await.map_err(|e| format!("Chrome não respondeu na porta {porta}: {e}"))?;
     tcp.write_all(format!("GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{porta}\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(|e| e.to_string())?;
-    let mut buf = Vec::new();
-    tcp.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
-    let txt = String::from_utf8_lossy(&buf);
-    let corpo = txt.split("\r\n\r\n").nth(1).unwrap_or("");
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tmp = [0u8; 4096];
+    let limite = std::time::Duration::from_secs(5);
+    let corpo = loop {
+        let n = match tokio::time::timeout(limite, tcp.read(&mut tmp)).await {
+            Ok(Ok(0)) | Err(_) => 0,
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(format!("lendo o Chrome: {e}")),
+        };
+        if n > 0 { buf.extend_from_slice(&tmp[..n]); }
+        let txt = String::from_utf8_lossy(&buf).to_string();
+        if let Some(pos) = txt.find("\r\n\r\n") {
+            let cab = &txt[..pos];
+            let tamanho = cab.lines().find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                if k.trim().eq_ignore_ascii_case("content-length") { v.trim().parse::<usize>().ok() } else { None }
+            });
+            let corpo_bytes = &buf[pos + 4..];
+            match tamanho {
+                Some(t) if corpo_bytes.len() >= t => break String::from_utf8_lossy(&corpo_bytes[..t]).to_string(),
+                Some(_) if n > 0 => continue,
+                _ => break String::from_utf8_lossy(corpo_bytes).to_string(),
+            }
+        }
+        if n == 0 { break String::new(); }
+    };
     let v: Value = serde_json::from_str(corpo.trim()).map_err(|_| "resposta do Chrome sem JSON".to_string())?;
     v["webSocketDebuggerUrl"].as_str().map(|s| s.to_string()).ok_or_else(|| "Chrome sem webSocketDebuggerUrl".into())
 }
@@ -200,17 +225,26 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
     if estado.lock().map(|g| g.ativa.is_some()).unwrap_or(false) {
         return emitir(&app, "erro", 0, None, Some("já existe uma gravação em andamento".into()));
     }
-    let url = match url_do_browser(porta).await { Ok(u) => u, Err(e) => return emitir(&app, "erro", 0, None, Some(e)) };
-    let (ws, _) = match tokio_tungstenite::connect_async(&url).await {
-        Ok(x) => x,
-        Err(e) => return emitir(&app, "erro", 0, None, Some(format!("não conectei ao Chrome pelo CDP: {e}"))),
-    };
+    // Chrome recém-aberto às vezes aceita TCP antes de o DevTools estar pronto: tenta por até ~8 s.
+    let mut ws = None;
+    let mut ultimo_erro = String::new();
+    for _ in 0..8 {
+        match url_do_browser(porta).await {
+            Ok(url) => match tokio_tungstenite::connect_async(&url).await {
+                Ok((w, _)) => { ws = Some(w); break; }
+                Err(e) => ultimo_erro = format!("não conectei ao Chrome pelo CDP: {e}"),
+            },
+            Err(e) => ultimo_erro = e,
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    }
+    let Some(ws) = ws else { return emitir(&app, "erro", 0, None, Some(ultimo_erro)); };
     let (mut tx, mut rx) = ws.split();
 
     let id = format!("{}-{:x}", agora_ms(), std::process::id());
-    let nome = if nome.trim().is_empty() { format!("Gravação de {}", chrono_curto()) } else { nome.trim().to_string() };
+    let mut nome = if nome.trim().is_empty() { format!("Gravação de {}", chrono_curto()) } else { nome.trim().to_string() };
     let (tx_notas, mut rx_notas) = mpsc::unbounded_channel::<Value>();
-    let (tx_parar, mut rx_parar) = mpsc::unbounded_channel::<Option<String>>();
+    let (tx_parar, mut rx_parar) = mpsc::unbounded_channel::<(Option<String>, Option<String>)>();
     if let Ok(mut g) = estado.lock() {
         g.ativa = Some(Ativa { id: id.clone(), passos: 0, notas: tx_notas, parar: tx_parar });
     }
@@ -245,7 +279,7 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
 
     loop {
         tokio::select! {
-            Some(c) = rx_parar.recv() => { criterio = c; break; }
+            Some((c, n)) = rx_parar.recv() => { criterio = c; if let Some(n) = n { nome = n; } break; }
             Some(n) = rx_notas.recv() => { notas.push(n); }
             m = rx.next() => {
                 let Some(Ok(Message::Text(txt))) = m else {
