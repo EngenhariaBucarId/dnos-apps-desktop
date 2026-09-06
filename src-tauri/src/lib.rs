@@ -16,6 +16,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod barra;
 mod gravador;
 mod meu_chrome;
+mod roteiro;
 mod voz;
 
 const URL_PADRAO: &str = "https://dnos.dnia.ai";
@@ -68,7 +69,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.4.5", meuChrome: true, gravador: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.5.0", meuChrome: true, gravador: true, roteiro: true };
 })();
 "#;
 
@@ -77,7 +78,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.4.5", meuChrome: true, gravador: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.0", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -241,6 +242,8 @@ pub fn run() {
             // Barra dentro do Chrome da pessoa e voz para notas.
             barra::instalar(app.handle());
             voz::instalar(app.handle());
+            // Roteiro: executa os passos mecânicos de uma habilidade direto no Chrome da pessoa.
+            roteiro::instalar(app.handle());
 
             // Diário: a página conta como cada carga chegou (script inicial
             // rodou? ponte do Tauri presente?) — vai para meu-chrome.log.
