@@ -38,9 +38,10 @@ const SCRIPT_DA_BARRA: &str = r#"
       @keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
       .t{font-weight:600;white-space:nowrap} .s{opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
       .n{opacity:.9;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38%}
+      .mic{font-size:13px;opacity:.35;transition:opacity .15s} .mic.on{opacity:1;animation:p .6s infinite}
       button{all:initial;font:600 12px -apple-system,Inter,Segoe UI,sans-serif;color:#fff;background:#E41A11;border-radius:6px;padding:5px 10px;cursor:pointer} button:hover{filter:brightness(1.1)}
       .marca{font:700 12px -apple-system,Inter,sans-serif;letter-spacing:.02em;opacity:.7}
-    </style><div class="b"><span class="dot"></span><span class="marca">dn.os</span><span class="t"></span><span class="s"></span><span class="n"></span><button hidden>Parar</button></div>`;
+    </style><div class="b"><span class="dot"></span><span class="marca">dn.os</span><span class="t"></span><span class="s"></span><span class="n"></span><span class="mic" hidden>🎙</span><button hidden>Parar</button></div>`;
     document.documentElement.appendChild(host);
     raiz.querySelector("button").addEventListener("click", () => { try { window.__dnosBarraCmd("parar"); } catch {} });
   };
@@ -53,6 +54,7 @@ const SCRIPT_DA_BARRA: &str = r#"
     raiz.querySelector(".s").textContent = e.sub || "";
     raiz.querySelector(".n").textContent = e.nota ? "“" + e.nota + "”" : "";
     raiz.querySelector("button").hidden = !e.parar;
+    const mic = raiz.querySelector(".mic"); mic.hidden = e.modo !== "grav"; mic.className = "mic" + (e.ouvindo ? " on" : "");
   };
   if (window.__dnosBarraEstado) window.__dnosBarra(window.__dnosBarraEstado);
 })();
@@ -87,6 +89,20 @@ pub fn mostrar(app: &AppHandle, estado: Value) {
     }
 }
 pub fn esconder(app: &AppHandle) { mostrar(app, Value::Null); }
+
+/// Atualiza só alguns campos do estado atual (ex.: `ouvindo`), sem apagar o resto.
+pub fn mesclar(app: &AppHandle, campos: Value) {
+    if let Some(b) = app.try_state::<Compartilhado>() {
+        if let Ok(mut g) = b.lock() {
+            if !g.atual.is_object() { return; }
+            if let (Some(dest), Some(src)) = (g.atual.as_object_mut(), campos.as_object()) {
+                for (k, v) in src { dest.insert(k.clone(), v.clone()); }
+            }
+            let e = g.atual.clone();
+            if let Some(tx) = g.tx.as_ref() { let _ = tx.send(e); }
+        }
+    }
+}
 
 /// Liga a conexão com o Chrome (chamado pelo Meu Chrome quando o Chrome responde).
 pub fn ligar(app: &AppHandle, porta: u16) {

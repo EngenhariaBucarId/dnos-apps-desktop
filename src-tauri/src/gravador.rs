@@ -52,7 +52,17 @@ const SCRIPT_DA_PAGINA: &str = r#"
     };
   };
   const enviar = (o) => { try { window.__dnosGravador(JSON.stringify(Object.assign({ url: location.href, titulo: document.title }, o))); } catch {} };
-  document.addEventListener("click", (e) => enviar({ t: "clique", alvo: descrever(e.target), x: e.clientX, y: e.clientY, vw: innerWidth, vh: innerHeight }), true);
+  const interativo = (el) => !!(el && el.closest && el.closest("button,a,input,select,textarea,summary,label,[role],[onclick],[tabindex],[contenteditable]"));
+  document.addEventListener("click", (e) => {
+    const el = e.target;
+    // Clique em texto solto (parágrafo, título, corpo da página) não é ação: só entra se for algo clicável ou um bloco curto.
+    if (!interativo(el)) {
+      const tag = (el && el.tagName || "").toLowerCase();
+      if (["p", "h1", "h2", "h3", "h4", "h5", "h6", "body", "html", "main", "article", "section", "li", "td", "th"].includes(tag)) return;
+      if (texto(el).length > 40) return;
+    }
+    enviar({ t: "clique", alvo: descrever(el), x: e.clientX, y: e.clientY, vw: innerWidth, vh: innerHeight });
+  }, true);
   document.addEventListener("change", (e) => {
     const el = e.target; if (!el || !el.tagName) return;
     const senha = String(el.type || "").toLowerCase() === "password";

@@ -56,7 +56,8 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>) -> Result<(),
     let conf = dev.default_input_config().map_err(|e| format!("config do microfone: {e}"))?;
     let taxa = conf.sample_rate().0 as usize;
     let canais = conf.channels() as usize;
-    meu_chrome::registrar(app, &format!("voz: microfone aberto ({} Hz, {} canais)", taxa, canais));
+    let nome_dev = dev.name().unwrap_or_else(|_| "?".into());
+    meu_chrome::registrar(app, &format!("voz: microfone aberto: {nome_dev} ({} Hz, {} canais, {:?})", taxa, canais, conf.sample_format()));
 
     // Acumulador de fala compartilhado entre o callback e o cortador.
     let acumulado: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
@@ -71,29 +72,49 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>) -> Result<(),
     stream.play().map_err(|e| format!("iniciando o microfone: {e}"))?;
 
     // Cortador: a cada 100 ms olha o que chegou e decide onde termina uma fala.
-    let limiar = 0.009f32;                 // RMS acima disso = voz
+    // Limiar adaptativo: 3x o ruído de fundo (mediana móvel dos blocos quietos),
+    // nunca abaixo de 0,004. Nível máximo vai para o diário a cada 5 s, para
+    // saber se o microfone está entregando áudio de verdade.
     let janela = taxa / 10;                // 100 ms
     let mut fala: Vec<f32> = Vec::new();
     let mut em_fala = false;
     let mut silencio_ms = 0u64;
     let mut inicio_fala = 0u64;
+    let mut ruido = 0.003f32;
+    let mut max_5s = 0f32;
+    let mut blocos_5s = 0u32;
+    let mut sem_audio_ms = 0u64;
+    let avisar = |falando: bool| {
+        let _ = app.emit("dnos://gravador/ouvindo", json!({ "falando": falando }));
+        crate::barra::mesclar(app, json!({ "ouvindo": falando }));
+    };
     loop {
         if parar.try_recv().is_ok() { break; }
         std::thread::sleep(std::time::Duration::from_millis(100));
         let pedaco: Vec<f32> = { let mut a = acumulado.lock().map_err(|_| "trava")?; std::mem::take(&mut *a) };
-        if pedaco.is_empty() { continue; }
+        if pedaco.is_empty() {
+            sem_audio_ms += 100;
+            if sem_audio_ms == 3000 { meu_chrome::registrar(app, "voz: 3 s sem NENHUMA amostra do microfone (permissão negada ou dispositivo mudo?)"); }
+            continue;
+        }
+        sem_audio_ms = 0;
         for bloco in pedaco.chunks(janela.max(1)) {
             let rms = (bloco.iter().map(|x| x * x).sum::<f32>() / bloco.len() as f32).sqrt();
+            let limiar = (ruido * 3.0).max(0.004);
             let voz = rms > limiar;
-            if voz { if !em_fala { em_fala = true; inicio_fala = agora_ms(); } silencio_ms = 0; }
+            if !voz { ruido = ruido * 0.95 + rms * 0.05; }
+            if rms > max_5s { max_5s = rms; }
+            blocos_5s += 1;
+            if blocos_5s >= 50 { meu_chrome::registrar(app, &format!("voz: nível máx {:.4} / ruído {:.4} / limiar {:.4} nos últimos 5 s", max_5s, ruido, limiar)); max_5s = 0.0; blocos_5s = 0; }
+            if voz { if !em_fala { em_fala = true; inicio_fala = agora_ms(); avisar(true); } silencio_ms = 0; }
             else if em_fala { silencio_ms += 100; }
             if em_fala { fala.extend_from_slice(bloco); }
             let dur_ms = (fala.len() as u64 * 1000) / taxa as u64;
             if em_fala && ((silencio_ms >= 800 && dur_ms >= 1000) || dur_ms >= 15000) {
                 if dur_ms >= 1000 { enviar(app, &fala, taxa, inicio_fala); }
-                fala.clear(); em_fala = false; silencio_ms = 0;
+                fala.clear(); em_fala = false; silencio_ms = 0; avisar(false);
             }
-            if em_fala && silencio_ms >= 800 && dur_ms < 1000 { fala.clear(); em_fala = false; silencio_ms = 0; }
+            if em_fala && silencio_ms >= 800 && dur_ms < 1000 { fala.clear(); em_fala = false; silencio_ms = 0; avisar(false); }
         }
     }
     drop(stream);
