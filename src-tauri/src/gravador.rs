@@ -361,6 +361,8 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
                         let info = &v["params"]["targetInfo"];
                         if info["type"].as_str() != Some("page") { continue; }
                         let Some(sid) = v["params"]["sessionId"].as_str() else { continue };
+                        // Solta popups pausados pelo auto-attach (ver barra.rs).
+                        mandar("Runtime.runIfWaitingForDebugger", json!({}), Some(sid));
                         mandar("Page.enable", json!({}), Some(sid));
                         mandar("Runtime.enable", json!({}), Some(sid));
                         mandar("Runtime.addBinding", json!({ "name": "__dnosGravador" }), Some(sid));

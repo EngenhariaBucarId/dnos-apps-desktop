@@ -68,7 +68,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.4.3", meuChrome: true, gravador: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.4.4", meuChrome: true, gravador: true };
 })();
 "#;
 
@@ -77,7 +77,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.4.3", meuChrome: true, gravador: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.4.4", meuChrome: true, gravador: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {

@@ -183,6 +183,11 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
                         if v["params"]["targetInfo"]["type"].as_str() != Some("page") { continue; }
                         let Some(sid) = v["params"]["sessionId"].as_str() else { continue };
                         sessoes.insert(sid.to_string());
+                        // Popup aberto por window.open fica PAUSADO enquanto houver cliente com
+                        // auto-attach — mesmo com waitForDebuggerOnStart:false (medido 06/09: o
+                        // design do Canva abria em branco). Isto solta a aba; é inofensivo quando
+                        // ela não está esperando.
+                        mandar("Runtime.runIfWaitingForDebugger", json!({}), Some(sid));
                         mandar("Runtime.enable", json!({}), Some(sid));
                         mandar("Runtime.addBinding", json!({ "name": "__dnosBarraCmd" }), Some(sid));
                         mandar("Page.enable", json!({}), Some(sid));
