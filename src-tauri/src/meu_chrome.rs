@@ -119,6 +119,7 @@ pub fn registrar(app: &AppHandle, linha: &str) {
 pub fn parar(app: &AppHandle, estado: &Compartilhado, motivo: &str) {
     let sessao = estado.lock().ok().and_then(|mut m| m.ligado.take());
     if let Some(s) = sessao {
+        crate::barra::desligar(app);
         let _ = s.cancelar.send(true);
         if let Ok(mut c) = s.chrome.lock() {
             if let Some(ch) = c.as_mut() {
@@ -259,6 +260,7 @@ async fn ligar(app: AppHandle, estado: Compartilhado, pedido: PedidoLigar) {
         m.ligado = Some(Sessao { porta, perfil: perfil.clone(), cancelar, chrome: chrome.clone() });
     }
     emitir(&app, Estado { estado: "ligado", porta: Some(porta), perfil: Some(perfil.clone()), motivo: None });
+    crate::barra::ligar(&app, porta);
 
     // Saída única para o WebSocket: os fluxos mandam quadros por este canal.
     let (para_ws, mut da_fila) = mpsc::channel::<Vec<u8>>(1024);

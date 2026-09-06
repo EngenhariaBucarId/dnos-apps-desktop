@@ -99,6 +99,15 @@ fn pasta(app: &AppHandle) -> Option<std::path::PathBuf> {
     Some(p)
 }
 
+/// Parar vindo da barra do Chrome (sem nome nem critério: a revisão pede).
+pub fn parar_de_fora(app: &AppHandle) {
+    if let Some(e) = app.try_state::<Compartilhado>() {
+        if let Ok(g) = e.lock() {
+            if let Some(a) = g.ativa.as_ref() { let _ = a.parar.send((None, None)); }
+        }
+    }
+}
+
 pub fn instalar(app: &AppHandle) {
     let estado: Compartilhado = Arc::new(Mutex::new(Gravador::default()));
     app.manage(estado.clone());
@@ -117,9 +126,10 @@ pub fn instalar(app: &AppHandle) {
     app.listen_any("dnos://gravador/nota", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
         if let Some(t) = v["texto"].as_str() {
+            let hora = v["hora"].as_u64().unwrap_or_else(agora_ms); // voz manda a hora em que foi dita
             if let Ok(g) = e.lock() {
                 if let Some(a) = g.ativa.as_ref() {
-                    let _ = a.notas.send(json!({ "hora": agora_ms(), "texto": t, "apos_passo": a.passos }));
+                    let _ = a.notas.send(json!({ "hora": hora, "texto": t, "apos_passo": a.passos, "voz": v["hora"].is_u64() }));
                 }
             }
         }
@@ -163,6 +173,24 @@ pub fn instalar(app: &AppHandle) {
         let _ = h.emit("dnos://gravador/lista", json!({ "gravacoes": lista }));
     });
 
+    // Nome e critério podem ser dados depois, na revisão (o Parar da barra não pergunta).
+    let h = app.clone();
+    app.listen_any("dnos://gravador/atualizar", move |evento| {
+        let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
+        let id = v["id"].as_str().unwrap_or("").replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "");
+        if id.is_empty() { return; }
+        if let Some(p) = pasta(&h) {
+            let arq = p.join(format!("{id}.json"));
+            if let Ok(txt) = std::fs::read_to_string(&arq) {
+                if let Ok(mut g) = serde_json::from_str::<Value>(&txt) {
+                    if let Some(n) = v["nome"].as_str() { if !n.trim().is_empty() { g["nome"] = json!(n.trim()); } }
+                    if v.get("criterio").is_some() { g["criterio"] = v["criterio"].clone(); }
+                    let _ = std::fs::write(&arq, g.to_string());
+                }
+            }
+        }
+    });
+
     // Apagar uma gravação desta máquina (só o arquivo dela; a lista volta atualizada).
     let h = app.clone();
     app.listen_any("dnos://gravador/apagar", move |evento| {
@@ -196,7 +224,7 @@ pub fn instalar(app: &AppHandle) {
 /// requisição crua basta para o Chrome. Lê pelo Content-Length: o servidor
 /// do DevTools NÃO fecha a conexão (ignora `Connection: close`), e esperar
 /// EOF travava até o Chrome morrer — foi o "reset by peer" de 06/09.
-async fn url_do_browser(porta: u16) -> Result<String, String> {
+pub async fn url_do_browser(porta: u16) -> Result<String, String> {
     let mut tcp = TcpStream::connect(("127.0.0.1", porta)).await.map_err(|e| format!("Chrome não respondeu na porta {porta}: {e}"))?;
     tcp.write_all(format!("GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{porta}\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(|e| e.to_string())?;
     let mut buf: Vec<u8> = Vec::new();
@@ -262,6 +290,8 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
         g.ativa = Some(Ativa { id: id.clone(), passos: 0, notas: tx_notas, parar: tx_parar });
     }
     emitir(&app, "gravando", 0, Some(&id), None);
+    crate::voz::ligar(&app);
+    crate::barra::mostrar(&app, json!({ "modo": "grav", "titulo": "Gravando", "sub": "0 passos · fale para anotar", "parar": true }));
 
     // Saída única para o CDP.
     let (para_cdp, mut fila) = mpsc::unbounded_channel::<Value>();
@@ -289,11 +319,16 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
     let mut criterio: Option<String> = None;
     let mut motivo_fim = "parado".to_string();
     let mut sessoes_iniciais: usize = 0;
+    let mut ultima_nota = String::new();
 
     loop {
         tokio::select! {
             Some((c, n)) = rx_parar.recv() => { criterio = c; if let Some(n) = n { nome = n; } break; }
-            Some(n) = rx_notas.recv() => { notas.push(n); }
+            Some(n) = rx_notas.recv() => {
+                ultima_nota = n["texto"].as_str().unwrap_or("").to_string();
+                notas.push(n);
+                crate::barra::mostrar(&app, json!({ "modo": "grav", "titulo": "Gravando", "sub": format!("{} passos · fale para anotar", passos.len()), "nota": ultima_nota, "parar": true }));
+            }
             m = rx.next() => {
                 let Some(Ok(Message::Text(txt))) = m else {
                     if matches!(m, Some(Ok(_))) { continue; }
@@ -376,7 +411,10 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
                 }
                 if metodo == "Runtime.bindingCalled" || metodo == "Page.frameNavigated" || metodo == "Target.attachedToTarget" {
                     if let Ok(mut g) = estado.lock() { if let Some(a) = g.ativa.as_mut() { a.passos = passos.len(); } }
-                    if metodo != "Target.attachedToTarget" || sessoes_iniciais == 0 { emitir(&app, "gravando", passos.len(), Some(&id), None); }
+                    if metodo != "Target.attachedToTarget" || sessoes_iniciais == 0 {
+                        emitir(&app, "gravando", passos.len(), Some(&id), None);
+                        crate::barra::mostrar(&app, json!({ "modo": "grav", "titulo": "Gravando", "sub": format!("{} passos · fale para anotar", passos.len()), "nota": ultima_nota, "parar": true }));
+                    }
                 }
             }
         }
@@ -400,6 +438,8 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
         }
     }
     escritor.abort();
+    crate::voz::desligar(&app);
+    crate::barra::esconder(&app);
 
     let gravacao = json!({
         "id": id, "nome": nome, "inicio": inicio, "fim": agora_ms(),
