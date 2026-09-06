@@ -163,6 +163,19 @@ pub fn instalar(app: &AppHandle) {
         let _ = h.emit("dnos://gravador/lista", json!({ "gravacoes": lista }));
     });
 
+    // Apagar uma gravação desta máquina (só o arquivo dela; a lista volta atualizada).
+    let h = app.clone();
+    app.listen_any("dnos://gravador/apagar", move |evento| {
+        let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
+        let id = v["id"].as_str().unwrap_or("").replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "");
+        if id.is_empty() { return; }
+        if let Some(p) = pasta(&h) {
+            let _ = std::fs::remove_file(p.join(format!("{id}.json")));
+            meu_chrome::registrar(&h, &format!("gravador: apagada {id}"));
+        }
+        let _ = h.emit("dnos://gravador/listar-de-novo", json!({}));
+    });
+
     // A página pede uma gravação inteira (com quadros) pelo id.
     let h = app.clone();
     app.listen_any("dnos://gravador/abrir", move |evento| {
