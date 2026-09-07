@@ -76,7 +76,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.5.5", meuChrome: true, gravador: true, roteiro: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.5.6", meuChrome: true, gravador: true, roteiro: true };
 })();
 "#;
 
@@ -85,7 +85,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.5", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.6", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -203,6 +203,11 @@ pub fn run() {
                 .title("dn.os")
                 .inner_size(1360.0, 860.0)
                 .min_inner_size(900.0, 600.0)
+                // Arrastar arquivo para o chat (07/09): por padrão a casca
+                // captura o drop e o transforma em evento próprio, e a página
+                // nunca recebe o `drop` do HTML5 — no web funcionava, no app
+                // não. Desligado, o drop chega à página como no navegador.
+                .disable_drag_drop_handler()
                 .initialization_script(&script)
                 // Rede de segurança (05/09): na primeira carga da instância a
                 // página às vezes não enxergou __DNOS_DESKTOP__ (o botão Meu
