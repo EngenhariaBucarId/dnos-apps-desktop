@@ -25,9 +25,19 @@ use crate::meu_chrome;
 const SCRIPT_DA_BARRA: &str = r#"
 (() => {
   if (window.__dnosBarra) { if (window.__dnosBarraEstado) window.__dnosBarra(window.__dnosBarraEstado); return; }
-  let host = null, raiz = null, estado = null;
+  let host = null, raiz = null, estado = null, agendado = false;
+  // Script de novo documento roda ANTES de existir <html>: appendChild em null
+  // (provado 07/09 — era por isso que a barra só aparecia na primeira aba).
+  // Sem raiz ainda, agenda para quando o documento existir.
+  const depois = () => {
+    if (agendado) return; agendado = true;
+    const tenta = () => { agendado = false; if (estado && !estado.esconder) window.__dnosBarra(estado); };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", tenta, { once: true });
+    setTimeout(tenta, 120);
+  };
   const garantir = () => {
-    if (host && document.documentElement.contains(host)) return;
+    if (host && document.documentElement && document.documentElement.contains(host)) return true;
+    if (!document.documentElement) return false;
     host = document.createElement("div"); host.id = "__dnos-barra";
     host.style.cssText = "all:initial;position:fixed;top:0;left:0;right:0;z-index:2147483647;pointer-events:none;";
     raiz = host.attachShadow({ mode: "open" });
@@ -48,11 +58,12 @@ const SCRIPT_DA_BARRA: &str = r#"
     </style><div class="b"><span class="dot"></span><span class="marca">dn.os</span><span class="t"></span><span class="s"></span><span class="n"></span><span class="ag"></span><span class="mic" hidden>🎙</span><button hidden>Parar</button></div>`;
     document.documentElement.appendChild(host);
     raiz.querySelector("button").addEventListener("click", () => { try { window.__dnosBarraCmd("parar"); } catch {} });
+    return true;
   };
   window.__dnosBarra = (e) => {
     estado = e;
     if (!e || e.esconder) { if (host) { host.remove(); host = null; } return; }
-    garantir();
+    if (!garantir()) { depois(); return; }
     const b = raiz.querySelector(".b"); b.className = "b " + (e.modo || "");
     raiz.querySelector(".t").textContent = e.titulo || "";
     raiz.querySelector(".s").textContent = e.sub || "";
@@ -120,7 +131,9 @@ fn foto_de(g: &Barra, nome: &str) -> Option<String> {
 fn recompor(g: &mut Barra) -> Value {
     let lista: Vec<Value> = g.agentes.iter().map(|(n, t)| json!({ "nome": n, "texto": t, "foto": foto_de(g, n) })).collect();
     let mut e = if g.gravacao.is_object() { g.gravacao.clone() } else if !lista.is_empty() {
-        json!({ "modo": "agente", "titulo": if g.agentes.len() == 1 { format!("{} está usando seu Chrome", g.agentes.keys().next().unwrap()) } else { format!("{} agentes usando seu Chrome", g.agentes.len()) } })
+        // `parar` também no modo agente (07/09): o botão da barra interrompe o
+        // roteiro da casca e pede ao dn.os para parar o agente.
+        json!({ "modo": "agente", "parar": true, "titulo": if g.agentes.len() == 1 { format!("{} está usando seu Chrome", g.agentes.keys().next().unwrap()) } else { format!("{} agentes usando seu Chrome", g.agentes.len()) } })
     } else { Value::Null };
     if e.is_object() && !lista.is_empty() { e["agentes"] = json!(lista); }
     g.atual = e.clone();
@@ -293,9 +306,18 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
                     "Target.detachedFromTarget" => { if let Some(sid) = v["params"]["sessionId"].as_str() { sessoes.remove(sid); scripts.remove(sid); } }
                     "Runtime.bindingCalled" => {
                         if v["params"]["name"].as_str() == Some("__dnosBarraCmd") && v["params"]["payload"].as_str() == Some("parar") {
-                            // Parar pela barra: a gravação encerra e a revisão abre no dn.os.
-                            let _ = app.emit("dnos://gravador/parar-pela-barra", json!({}));
-                            crate::gravador::parar_de_fora(&app);
+                            let gravando = app.try_state::<Compartilhado>().and_then(|b| b.lock().ok().map(|g| g.gravacao.is_object())).unwrap_or(false);
+                            if gravando {
+                                // Parar pela barra: a gravação encerra e a revisão abre no dn.os.
+                                let _ = app.emit("dnos://gravador/parar-pela-barra", json!({}));
+                                crate::gravador::parar_de_fora(&app);
+                            } else {
+                                // Agente agindo: cancela o roteiro da casca e pede ao dn.os
+                                // para interromper o turno do agente (a página escuta).
+                                meu_chrome::registrar(&app, "barra: Parar (agente) pela barra");
+                                crate::roteiro::parar(&app);
+                                let _ = app.emit("dnos://barra/parar-agente", json!({}));
+                            }
                         }
                     }
                     _ => {}

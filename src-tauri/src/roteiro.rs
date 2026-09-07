@@ -75,9 +75,12 @@ pub fn instalar(app: &AppHandle) {
         tauri::async_runtime::spawn(async move { executar(h2, v).await });
     });
     let h = app.clone();
-    app.listen_any("dnos://roteiro/parar", move |_| {
-        if let Some(r) = h.try_state::<Compartilhado>() { if let Ok(g) = r.lock() { if let Some(c) = g.cancelar.as_ref() { let _ = c.send(true); } } }
-    });
+    app.listen_any("dnos://roteiro/parar", move |_| parar(&h));
+}
+
+/// Cancela o roteiro em andamento (pela página ou pelo Parar da barra do Chrome).
+pub fn parar(app: &AppHandle) {
+    if let Some(r) = app.try_state::<Compartilhado>() { if let Ok(g) = r.lock() { if let Some(c) = g.cancelar.as_ref() { let _ = c.send(true); } } }
 }
 
 fn emitir(app: &AppHandle, v: Value) {

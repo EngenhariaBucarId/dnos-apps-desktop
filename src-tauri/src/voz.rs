@@ -50,13 +50,55 @@ pub fn desligar(app: &AppHandle) {
     }
 }
 
+/// Dispositivos virtuais (compartilhamento de tela, reunião) entregam só zeros
+/// e costumam virar "entrada padrão" sem a pessoa perceber — foi o caso do
+/// IdeaShare em 07/09: gravação inteira sem uma nota.
+fn dispositivo_virtual(nome: &str) -> bool {
+    let n = nome.to_lowercase();
+    ["ideashare", "zoom", "teams", "blackhole", "soundflower", "loopback", "virtual", "aggregate", "agregado", "obs "].iter().any(|v| n.contains(v))
+}
+
+/// Estado do microfone para a página: qual está em uso e se entrega som.
+fn avisar_microfone(app: &AppHandle, nome: &str, ok: bool, motivo: &str) {
+    let _ = app.emit("dnos://gravador/microfone", json!({ "nome": nome, "ok": ok, "motivo": motivo }));
+}
+
+enum Fim { Parou, SemSinal }
+
+/// Tenta o microfone padrão e, se ele só entregar silêncio absoluto, o próximo
+/// dispositivo real da lista. A página recebe qual ficou e se há sinal.
 fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>) -> Result<(), String> {
     let host = cpal::default_host();
-    let dev = host.default_input_device().ok_or("sem microfone padrão")?;
+    let mut cands: Vec<cpal::Device> = Vec::new();
+    if let Some(d) = host.default_input_device() { cands.push(d); }
+    if let Ok(it) = host.input_devices() {
+        for d in it {
+            let n = d.name().unwrap_or_default();
+            if dispositivo_virtual(&n) { continue; }
+            if cands.iter().any(|c| c.name().ok().as_deref() == Some(n.as_str())) { continue; }
+            cands.push(d);
+        }
+    }
+    if cands.is_empty() { avisar_microfone(app, "", false, "sem microfone"); return Err("sem microfone".into()); }
+    let total = cands.len();
+    for (i, dev) in cands.into_iter().enumerate() {
+        let nome = dev.name().unwrap_or_else(|_| "?".into());
+        let pode_trocar = i + 1 < total;
+        match capturar_com(app, &parar, dev, &nome, pode_trocar) {
+            Ok(Fim::Parou) => return Ok(()),
+            Ok(Fim::SemSinal) => { meu_chrome::registrar(app, &format!("voz: {nome} só entregou silêncio absoluto; tentando o próximo microfone")); }
+            Err(e) => { meu_chrome::registrar(app, &format!("voz: {nome}: {e}; tentando o próximo")); }
+        }
+        if parar.try_recv().is_ok() { return Ok(()); }
+    }
+    avisar_microfone(app, "", false, "nenhum microfone entregou áudio");
+    Err("nenhum microfone entregou áudio".into())
+}
+
+fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpal::Device, nome_dev: &str, pode_trocar: bool) -> Result<Fim, String> {
     let conf = dev.default_input_config().map_err(|e| format!("config do microfone: {e}"))?;
     let taxa = conf.sample_rate().0 as usize;
     let canais = conf.channels() as usize;
-    let nome_dev = dev.name().unwrap_or_else(|_| "?".into());
     meu_chrome::registrar(app, &format!("voz: microfone aberto: {nome_dev} ({} Hz, {} canais, {:?})", taxa, canais, conf.sample_format()));
 
     // Acumulador de fala compartilhado entre o callback e o cortador.
@@ -84,13 +126,24 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>) -> Result<(),
     let mut max_5s = 0f32;
     let mut blocos_5s = 0u32;
     let mut sem_audio_ms = 0u64;
+    // Sinal de verdade: qualquer amostra diferente de zero. Só zeros por 3 s é
+    // dispositivo mudo, virtual ou sem permissão — troca (ou avisa, se for o último).
+    let inicio = std::time::Instant::now();
+    let mut com_sinal = false;
+    let mut avisou_mudo = false;
     let avisar = |falando: bool| {
         let _ = app.emit("dnos://gravador/ouvindo", json!({ "falando": falando }));
         crate::barra::mesclar(app, json!({ "ouvindo": falando }));
     };
     loop {
-        if parar.try_recv().is_ok() { break; }
+        if parar.try_recv().is_ok() { drop(stream); meu_chrome::registrar(app, "voz: microfone fechado"); return Ok(Fim::Parou); }
         std::thread::sleep(std::time::Duration::from_millis(100));
+        if !com_sinal && !avisou_mudo && inicio.elapsed() >= std::time::Duration::from_secs(3) {
+            if pode_trocar { drop(stream); return Ok(Fim::SemSinal); }
+            avisou_mudo = true;
+            meu_chrome::registrar(app, &format!("voz: {nome_dev} sem sinal há 3 s (permissão negada ou dispositivo mudo?)"));
+            avisar_microfone(app, nome_dev, false, "sem sinal: confira o microfone em Ajustes do Sistema → Som → Entrada e a permissão do dn.os em Privacidade → Microfone");
+        }
         let pedaco: Vec<f32> = { let mut a = acumulado.lock().map_err(|_| "trava")?; std::mem::take(&mut *a) };
         if pedaco.is_empty() {
             sem_audio_ms += 100;
@@ -98,6 +151,11 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>) -> Result<(),
             continue;
         }
         sem_audio_ms = 0;
+        if !com_sinal && pedaco.iter().any(|x| *x != 0.0) {
+            com_sinal = true;
+            meu_chrome::registrar(app, &format!("voz: {nome_dev} entregando áudio"));
+            avisar_microfone(app, nome_dev, true, "");
+        }
         for bloco in pedaco.chunks(janela.max(1)) {
             let rms = (bloco.iter().map(|x| x * x).sum::<f32>() / bloco.len() as f32).sqrt();
             let limiar = (ruido * 3.0).max(0.004);
@@ -117,9 +175,6 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>) -> Result<(),
             if em_fala && silencio_ms >= 800 && dur_ms < 1000 { fala.clear(); em_fala = false; silencio_ms = 0; avisar(false); }
         }
     }
-    drop(stream);
-    meu_chrome::registrar(app, "voz: microfone fechado");
-    Ok(())
 }
 
 /// Reamostra para 16 kHz mono, empacota em WAV e manda para a página transcrever.
