@@ -24,10 +24,9 @@
   .agente img { display:block; width:100%; height:100%; border-radius:50%;
     filter:drop-shadow(0 6px 14px rgba(0,0,0,.55)) drop-shadow(0 0 10px rgba(61,97,255,.18));
     animation:contra 40s linear infinite; }
-  .marca { position:absolute; inset:0; display:grid; place-items:center;
-    font-family:"JetBrains Mono", ui-monospace, monospace; font-size:1.6rem; letter-spacing:.02em; }
-  .marca b { color:var(--primary); }
-  .pulso { position:absolute; left:50%; top:calc(50% + 1.5rem); width:8px; height:8px; margin-left:-4px; border-radius:50%; background:var(--primary); animation:p 1.2s ease-in-out infinite; }
+  .marca { position:absolute; inset:0; display:grid; place-items:center; }
+  .marca img { width:96px; height:96px; display:block; filter:drop-shadow(0 8px 22px rgba(0,0,0,.6)) drop-shadow(0 0 18px rgba(61,97,255,.28)); }
+  .pulso { position:absolute; left:50%; top:calc(50% + 66px); width:8px; height:8px; margin-left:-4px; border-radius:50%; background:var(--primary); animation:p 1.2s ease-in-out infinite; }
 
   @keyframes orbita { to { transform:rotate(360deg); } }
   @keyframes contra { to { transform:rotate(-360deg); } }   /* mantém os rostos em pé enquanto a roda gira */
@@ -50,7 +49,7 @@
   <div class="caixa">
     <div class="palco" id="palco" aria-hidden="true">
       <div class="anel" id="anel"></div>
-      <div class="marca"><span><b>.</b>dn.os</span><span class="pulso"></span></div>
+      <div class="marca"><img src="icone.png" alt="dn.os" draggable="false"><span class="pulso"></span></div>
     </div>
     <div id="carregando"><p>Abrindo o seu dn.os…</p></div>
     <div id="offline">
