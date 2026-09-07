@@ -36,6 +36,13 @@ fn navegacao_interna(url: &url::Url, host_da_instancia: &str) -> bool {
     if url.scheme() == "tauri" || url.scheme() == "asset" || host == "tauri.localhost" {
         return true; // a página local (carregando / sem conexão)
     }
+    // O filtro roda para TODO quadro, não só a janela (wry no macOS não separa
+    // iframe de página). O artefato do dn.os é um iframe `srcdoc` — URL
+    // `about:srcdoc`, sem host — e era cancelado aqui: o painel abria vazio
+    // (06/09). Esquemas internos do próprio documento passam sempre.
+    if matches!(url.scheme(), "about" | "blob" | "data" | "javascript") {
+        return true;
+    }
     host == host_da_instancia
         || host.ends_with(".supabase.co")
         || host.ends_with(".lovable.app")
@@ -69,7 +76,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.5.2", meuChrome: true, gravador: true, roteiro: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.5.3", meuChrome: true, gravador: true, roteiro: true };
 })();
 "#;
 
@@ -78,7 +85,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.2", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.3", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
