@@ -56,12 +56,28 @@ fn navegacao_interna(url: &url::Url, host_da_instancia: &str) -> bool {
 /// `window.open` para o navegador do sistema, pela ponte do Tauri.
 const SCRIPT_INICIAL: &str = r#"
 (() => {
+  // Abre no navegador do sistema por três caminhos, do mais direto ao mais
+  // robusto: API do plugin (quando injetada), invoke do core (sempre existe
+  // com withGlobalTauri), evento que o Rust ouve (dnos://abrir-url). Cada
+  // tentativa vai para o diário (meu-chrome.log) — em 08/09 os links não
+  // abriam e não havia rastro de qual degrau falhou.
+  const diario = (o) => { try { window.__TAURI__.event.emit("dnos://diario", o); } catch {} };
+  const abrirFora = (url) => {
+    const t = window.__TAURI__;
+    try { if (t && t.opener && t.opener.openUrl) { t.opener.openUrl(url); diario({ link: url, via: "opener" }); return true; } } catch (e) { diario({ link: url, via: "opener", erro: String(e) }); }
+    try { if (t && t.core && t.core.invoke) { t.core.invoke("plugin:opener|open_url", { url }); diario({ link: url, via: "invoke" }); return true; } } catch (e) { diario({ link: url, via: "invoke", erro: String(e) }); }
+    try { if (t && t.event && t.event.emit) { t.event.emit("dnos://abrir-url", url); diario({ link: url, via: "evento" }); return true; } } catch (e) { diario({ link: url, via: "evento", erro: String(e) }); }
+    // Último recurso: navega nesta janela; o on_navigation do Rust cancela e
+    // abre no navegador. Nunca fica no vazio como o target=_blank do WKWebView.
+    try { location.assign(url); diario({ link: url, via: "navegacao" }); return true; } catch {}
+    return false;
+  };
   const externo = (href) => {
     try {
       const u = new URL(href, location.href);
       if (u.origin === location.origin) return false;
-      const t = window.__TAURI__;
-      if (t && t.opener && t.opener.openUrl) { t.opener.openUrl(u.toString()); return true; }
+      if (!/^https?:$|^mailto:$|^tel:$/.test(u.protocol)) return false;
+      return abrirFora(u.toString());
     } catch {}
     return false;
   };
@@ -76,7 +92,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.5.6", meuChrome: true, gravador: true, roteiro: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.5.7", meuChrome: true, gravador: true, roteiro: true };
 })();
 "#;
 
@@ -85,7 +101,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.6", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.7", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -225,7 +241,9 @@ pub fn run() {
                         return true;
                     }
                     // Fora da instância: abre no navegador do sistema e não navega aqui.
-                    let _ = tauri_plugin_opener::open_url(url.to_string(), None::<&str>);
+                    if let Err(e) = tauri_plugin_opener::open_url(url.to_string(), None::<&str>) {
+                        eprintln!("[dnos-desktop] não abriu {url}: {e}");
+                    }
                     let _ = &handle_nav;
                     false
                 })
@@ -262,6 +280,20 @@ pub fn run() {
             let handle_diario = app.handle().clone();
             app.listen_any("dnos://diario", move |evento| {
                 meu_chrome::registrar(&handle_diario, &format!("carga: {}", evento.payload()));
+            });
+
+            // Link externo pedido pela página (terceiro caminho do script inicial,
+            // quando a API JS do opener não está disponível na página remota).
+            app.listen_any("dnos://abrir-url", move |evento| {
+                let url = serde_json::from_str::<serde_json::Value>(evento.payload())
+                    .ok()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_else(|| evento.payload().trim_matches('"').to_string());
+                if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") || url.starts_with("tel:") {
+                    if let Err(e) = tauri_plugin_opener::open_url(url.clone(), None::<&str>) {
+                        eprintln!("[dnos-desktop] não abriu {url}: {e}");
+                    }
+                }
             });
 
             // Deep link com o app já aberto (macOS entrega por aqui).

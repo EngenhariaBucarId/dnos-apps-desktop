@@ -1,6 +1,6 @@
 {
   "name": "dnos-desktop",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "private": true,
   "description": "dn.os Desktop — casca Tauri do dn.os (carrega a instância web; notificações nativas, deep link, atualização automática)",
   "scripts": {
