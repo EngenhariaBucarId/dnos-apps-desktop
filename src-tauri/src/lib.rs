@@ -72,9 +72,12 @@ const SCRIPT_INICIAL: &str = r#"
   window.addEventListener("unhandledrejection", (e) => { diario({ promessaRejeitada: String(e && e.reason && (e.reason.message || e.reason) || e) }); });
   const abrirFora = (url) => {
     const t = window.__TAURI__;
-    try { if (t && t.opener && t.opener.openUrl) { t.opener.openUrl(url); diario({ link: url, via: "opener" }); return true; } } catch (e) { diario({ link: url, via: "opener", erro: String(e) }); }
-    try { if (t && t.core && t.core.invoke) { t.core.invoke("plugin:opener|open_url", { url }); diario({ link: url, via: "invoke" }); return true; } } catch (e) { diario({ link: url, via: "invoke", erro: String(e) }); }
+    // Primeiro o Rust (evento ouvido em lib.rs): o `open_url` nativo não passa
+    // pelo escopo de URLs da capability — a 0.5.7 morria aqui com "Not allowed
+    // to open url", rejeição assíncrona que o script não via (diário 08/09).
     try { if (t && t.event && t.event.emit) { t.event.emit("dnos://abrir-url", url); diario({ link: url, via: "evento" }); return true; } } catch (e) { diario({ link: url, via: "evento", erro: String(e) }); }
+    try { if (t && t.opener && t.opener.openUrl) { t.opener.openUrl(url).catch((e) => diario({ link: url, via: "opener", erro: String(e) })); diario({ link: url, via: "opener" }); return true; } } catch (e) { diario({ link: url, via: "opener", erro: String(e) }); }
+    try { if (t && t.core && t.core.invoke) { t.core.invoke("plugin:opener|open_url", { url }).catch((e) => diario({ link: url, via: "invoke", erro: String(e) })); diario({ link: url, via: "invoke" }); return true; } } catch (e) { diario({ link: url, via: "invoke", erro: String(e) }); }
     // Último recurso: navega nesta janela; o on_navigation do Rust cancela e
     // abre no navegador. Nunca fica no vazio como o target=_blank do WKWebView.
     try { location.assign(url); diario({ link: url, via: "navegacao" }); return true; } catch {}
@@ -100,7 +103,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.5.8", meuChrome: true, gravador: true, roteiro: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.5.9", meuChrome: true, gravador: true, roteiro: true };
 })();
 "#;
 
@@ -109,7 +112,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.8", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.9", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {

@@ -23,6 +23,7 @@
     "core:window:allow-set-badge-count",
     "notification:default",
     "deep-link:default",
+    "opener:default",
     "opener:allow-open-url",
     "os:allow-platform",
     "os:allow-version",
