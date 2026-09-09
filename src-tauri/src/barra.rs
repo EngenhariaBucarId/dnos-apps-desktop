@@ -41,7 +41,10 @@ const SCRIPT_DA_BARRA: &str = r#"
     host = document.createElement("div"); host.id = "__dnos-barra";
     host.style.cssText = "all:initial;position:fixed;top:0;left:0;right:0;z-index:2147483647;pointer-events:none;";
     raiz = host.attachShadow({ mode: "open" });
-    raiz.innerHTML = `<style>
+    // Sem innerHTML: Google Docs, GitHub e outros exigem Trusted Types e o
+    // innerHTML no shadow root estourava ("requires 'TrustedHTML' assignment") —
+    // era por isso que a barra faltava nas abas do agente (provado 09/09).
+    const css = `
       .b{pointer-events:auto;font:13px/1.3 -apple-system,Inter,Segoe UI,sans-serif;color:#fff;display:flex;align-items:center;gap:10px;padding:7px 12px;background:rgba(10,10,10,.92);border-bottom:1px solid rgba(255,255,255,.12);box-shadow:0 2px 12px rgba(0,0,0,.35);backdrop-filter:blur(8px)}
       .b.grav{border-bottom-color:rgba(228,26,17,.7)} .b.agente{border-bottom-color:rgba(61,97,255,.8)}
       .dot{width:9px;height:9px;border-radius:50%;background:#E41A11;flex:none;animation:p 1.2s infinite} .agente .dot{background:#3D61FF}
@@ -55,7 +58,14 @@ const SCRIPT_DA_BARRA: &str = r#"
       .a i{display:inline-flex;align-items:center;justify-content:center;font:700 11px -apple-system,Inter,sans-serif;font-style:normal;color:#fff;background:#3D61FF}
       button{all:initial;font:600 12px -apple-system,Inter,Segoe UI,sans-serif;color:#fff;background:#E41A11;border-radius:6px;padding:5px 10px;cursor:pointer} button:hover{filter:brightness(1.1)}
       .marca{font:700 12px -apple-system,Inter,sans-serif;letter-spacing:.02em;opacity:.7}
-    </style><div class="b"><span class="dot"></span><span class="marca">dn.os</span><span class="t"></span><span class="s"></span><span class="n"></span><span class="ag"></span><span class="mic" hidden>🎙</span><button hidden>Parar</button></div>`;
+    `;
+    const st = document.createElement("style"); st.textContent = css; raiz.appendChild(st);
+    const b = document.createElement("div"); b.className = "b";
+    const mk = (tag, cls, texto) => { const el = document.createElement(tag); if (cls) el.className = cls; if (texto != null) el.textContent = texto; b.appendChild(el); return el; };
+    mk("span", "dot"); mk("span", "marca", "dn.os"); mk("span", "t"); mk("span", "s"); mk("span", "n"); mk("span", "ag");
+    const mic = mk("span", "mic", "🎙"); mic.hidden = true;
+    const bt = mk("button", null, "Parar"); bt.hidden = true;
+    raiz.appendChild(b);
     document.documentElement.appendChild(host);
     raiz.querySelector("button").addEventListener("click", () => { try { window.__dnosBarraCmd("parar"); } catch {} });
     return true;
