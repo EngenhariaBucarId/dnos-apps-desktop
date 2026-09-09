@@ -62,6 +62,14 @@ const SCRIPT_INICIAL: &str = r#"
   // tentativa vai para o diário (meu-chrome.log) — em 08/09 os links não
   // abriam e não havia rastro de qual degrau falhou.
   const diario = (o) => { try { window.__TAURI__.event.emit("dnos://diario", o); } catch {} };
+  // Rastro de erro da página no diário (08/09: a casca 0.5.7 abriu em branco e
+  // não havia como saber o que o WKWebView recusou). Erro de script, promessa
+  // rejeitada e recurso que não carregou vão para meu-chrome.log.
+  window.addEventListener("error", (e) => {
+    const alvo = e && e.target && e.target !== window && e.target.tagName ? (e.target.tagName + " " + (e.target.src || e.target.href || "")) : null;
+    diario({ erroPagina: alvo ? ("recurso não carregou: " + alvo) : String(e && e.message || e), onde: e && e.filename ? (e.filename + ":" + e.lineno) : undefined });
+  }, true);
+  window.addEventListener("unhandledrejection", (e) => { diario({ promessaRejeitada: String(e && e.reason && (e.reason.message || e.reason) || e) }); });
   const abrirFora = (url) => {
     const t = window.__TAURI__;
     try { if (t && t.opener && t.opener.openUrl) { t.opener.openUrl(url); diario({ link: url, via: "opener" }); return true; } } catch (e) { diario({ link: url, via: "opener", erro: String(e) }); }
@@ -92,7 +100,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.5.7", meuChrome: true, gravador: true, roteiro: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.5.8", meuChrome: true, gravador: true, roteiro: true };
 })();
 "#;
 
@@ -101,7 +109,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.7", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.8", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -110,6 +118,22 @@ const SCRIPT_APRESENTACAO: &str = r#"
     } catch {}
   }
   try { if (temTauri) window.__TAURI__.event.emit("dnos://diario", { pagina: location.pathname, tinhaFlag, temTauri, recarregou }); } catch {}
+  // 4 s depois: o app montou? (#root com filhos). Se não, o diário diz quantos
+  // scripts a página tem e o que o WKWebView contou — é o rastro do "abriu em branco".
+  if (temTauri && location.protocol.startsWith("http")) setTimeout(() => {
+    try {
+      const raiz = document.getElementById("root");
+      const scripts = [...document.scripts].map((s) => (s.src || "inline").replace(location.origin, "")).slice(0, 6);
+      const montou = !!(raiz && raiz.childElementCount);
+      window.__TAURI__.event.emit("dnos://diario", { montou, filhosDoRoot: raiz ? raiz.childElementCount : -1, scripts, titulo: document.title, ua: navigator.userAgent.slice(0, 80) });
+      // Não montou: recarrega sem cache até 2 vezes (um service worker ou um
+      // bundle pela metade não pode deixar a casca em branco para sempre).
+      if (!montou) {
+        const n = Number(sessionStorage.getItem("dnos-tentativas") || "0");
+        if (n < 2) { sessionStorage.setItem("dnos-tentativas", String(n + 1)); window.__TAURI__.event.emit("dnos://diario", { recarregandoPorVazio: n + 1 }); setTimeout(() => location.replace(location.pathname + "?_r=" + Date.now()), 300); }
+      } else { sessionStorage.removeItem("dnos-tentativas"); }
+    } catch {}
+  }, 4000);
   if (recarregou) setTimeout(() => location.reload(), 50);
 })();
 "#;
