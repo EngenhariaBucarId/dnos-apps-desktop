@@ -96,6 +96,19 @@ pub struct Barra {
     /// Fotos mandadas pela página do dn.os (nome em minúsculas -> data URI), para
     /// agentes que a casca não traz embutidos.
     fotos: std::collections::HashMap<String, String>,
+    /// Última vez que cada agente deu sinal. Sem sinal por 2 min ele sai da
+    /// barra sozinho: o "terminou" da VPS pode se perder (turno que falha,
+    /// ponte religando) e em 09/09 o Milo ficou horas na barra sem estar agindo.
+    visto: std::collections::HashMap<String, std::time::Instant>,
+}
+
+const VALIDADE_DO_AGENTE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Tira da barra os agentes sem sinal há mais de 2 min. Devolve se mudou algo.
+fn expirar(g: &mut Barra) -> bool {
+    let vencidos: Vec<String> = g.agentes.keys().filter(|n| g.visto.get(*n).map(|t| t.elapsed() > VALIDADE_DO_AGENTE).unwrap_or(true)).cloned().collect();
+    for n in &vencidos { g.agentes.remove(n); g.visto.remove(n); }
+    !vencidos.is_empty()
 }
 
 /// Os 8 agentes do time vêm embutidos (56 px, círculo) — a barra mostra a foto
@@ -157,7 +170,8 @@ pub fn fotos(app: &AppHandle, mapa: Value) {
 pub fn agente(app: &AppHandle, nome: &str, texto: &str, fim: bool) {
     if let Some(b) = app.try_state::<Compartilhado>() {
         if let Ok(mut g) = b.lock() {
-            if fim { g.agentes.remove(nome); } else { g.agentes.insert(nome.to_string(), texto.to_string()); }
+            if fim { g.agentes.remove(nome); g.visto.remove(nome); } else { g.agentes.insert(nome.to_string(), texto.to_string()); g.visto.insert(nome.to_string(), std::time::Instant::now()); }
+            expirar(&mut g);
             let e = recompor(&mut g);
             if let Some(tx) = g.tx.as_ref() { let _ = tx.send(e); }
         }
@@ -166,8 +180,25 @@ pub fn agente(app: &AppHandle, nome: &str, texto: &str, fim: bool) {
 pub type Compartilhado = Arc<Mutex<Barra>>;
 
 pub fn instalar(app: &AppHandle) {
-    let estado: Compartilhado = Arc::new(Mutex::new(Barra { tx: None, atual: Value::Null, gravacao: Value::Null, agentes: Default::default(), fotos: Default::default() }));
+    let estado: Compartilhado = Arc::new(Mutex::new(Barra { tx: None, atual: Value::Null, gravacao: Value::Null, agentes: Default::default(), fotos: Default::default(), visto: Default::default() }));
     app.manage(estado);
+    // Varredura: agente sem sinal há 2 min sai da barra mesmo sem "terminou".
+    let h_var = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            if let Some(b) = h_var.try_state::<Compartilhado>() {
+                if let Ok(mut g) = b.lock() {
+                    if g.agentes.is_empty() { continue; }
+                    if expirar(&mut g) {
+                        meu_chrome::registrar(&h_var, "barra: agente sem sinal há 2 min saiu da barra");
+                        let e = recompor(&mut g);
+                        if let Some(tx) = g.tx.as_ref() { let _ = tx.send(e); }
+                    }
+                }
+            }
+        }
+    });
     let h2 = app.clone();
     app.listen_any("dnos://barra/fotos", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
@@ -223,7 +254,7 @@ pub fn ligar(app: &AppHandle, porta: u16) {
 /// Desliga (o Meu Chrome fechou): o laço termina sozinho quando o canal morre.
 pub fn desligar(app: &AppHandle) {
     if let Some(b) = app.try_state::<Compartilhado>() {
-        if let Ok(mut g) = b.lock() { g.tx = None; g.atual = Value::Null; g.gravacao = Value::Null; g.agentes.clear(); }
+        if let Ok(mut g) = b.lock() { g.tx = None; g.atual = Value::Null; g.gravacao = Value::Null; g.agentes.clear(); g.visto.clear(); }
     }
 }
 
