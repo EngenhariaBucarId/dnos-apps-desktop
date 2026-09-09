@@ -254,6 +254,7 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
     };
     let mut scripts: std::collections::HashMap<String, String> = std::collections::HashMap::new(); // sessao -> identifier do script de novo documento
     let mut pendentes: std::collections::HashMap<u64, String> = std::collections::HashMap::new(); // id da requisicao -> sessao
+    let mut conferencias: std::collections::HashMap<u64, String> = std::collections::HashMap::new(); // id da conferência "tem barra?" -> sessao
     mandar("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }), None);
     let mut sessoes: HashSet<String> = HashSet::new();
     let estado_atual = || app.try_state::<Compartilhado>().and_then(|b| b.lock().ok().map(|g| g.atual.clone())).unwrap_or(Value::Null);
@@ -273,7 +274,12 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
                     if let Some(id_antigo) = scripts.get(s) { mandar("Page.removeScriptToEvaluateOnNewDocument", json!({ "identifier": id_antigo }), Some(s)); }
                     let rid = mandar("Page.addScriptToEvaluateOnNewDocument", json!({ "source": fonte }), Some(s));
                     pendentes.insert(rid, s.clone());
+                    // Diagnóstico (09/09: "barra só na primeira aba" com agente agindo):
+                    // meio segundo depois, cada aba diz se a barra existe nela.
+                    let rid2 = mandar("Runtime.evaluate", json!({ "expression": "(() => { try { const h = document.getElementById('__dnos-barra'); return (h ? 'com barra' : 'SEM barra') + ' · ' + location.href.slice(0, 80); } catch (e) { return 'erro ' + e; } })()", "returnByValue": true }), Some(s));
+                    conferencias.insert(rid2, s.clone());
                 }
+                meu_chrome::registrar(&app, &format!("barra: estado enviado a {} aba(s)", sessoes.len()));
             }
             m = rx_ws.next() => {
                 let Some(Ok(Message::Text(txt))) = m else { if matches!(m, Some(Ok(_))) { continue; } break; };
@@ -282,6 +288,13 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
                     if let Some(sid) = pendentes.remove(&rid) {
                         if let Some(ident) = v["result"]["identifier"].as_str() { scripts.insert(sid, ident.to_string()); }
                     }
+                    if conferencias.remove(&rid).is_some() {
+                        let r = v["result"]["result"]["value"].as_str().map(|s| s.to_string())
+                            .or_else(|| v["result"]["exceptionDetails"]["text"].as_str().map(|s| format!("exceção: {s}")))
+                            .or_else(|| v["error"]["message"].as_str().map(|s| format!("erro CDP: {s}")))
+                            .unwrap_or_else(|| "sem resposta".into());
+                        meu_chrome::registrar(&app, &format!("barra: aba → {r}"));
+                    }
                     continue;
                 }
                 match v["method"].as_str().unwrap_or("") {
@@ -289,6 +302,7 @@ async fn laco(app: AppHandle, porta: u16, mut rx: mpsc::UnboundedReceiver<Value>
                         if v["params"]["targetInfo"]["type"].as_str() != Some("page") { continue; }
                         let Some(sid) = v["params"]["sessionId"].as_str() else { continue };
                         sessoes.insert(sid.to_string());
+                        meu_chrome::registrar(&app, &format!("barra: aba anexada ({} no total) {}", sessoes.len(), v["params"]["targetInfo"]["url"].as_str().unwrap_or("").chars().take(80).collect::<String>()));
                         // Popup aberto por window.open fica PAUSADO enquanto houver cliente com
                         // auto-attach — mesmo com waitForDebuggerOnStart:false (medido 06/09: o
                         // design do Canva abria em branco). Isto solta a aba; é inofensivo quando
