@@ -123,7 +123,7 @@ fn expirar(g: &mut Barra) -> bool {
 
 /// Os 8 agentes do time vêm embutidos (56 px, círculo) — a barra mostra a foto
 /// mesmo sem a página do dn.os ter mandado nada.
-const FOTOS_EMBUTIDAS: [(&str, &[u8]); 8] = [
+pub(crate) const FOTOS_EMBUTIDAS: [(&str, &[u8]); 8] = [
     ("lia", include_bytes!("../agentes/lia.png")),
     ("milo", include_bytes!("../agentes/milo.png")),
     ("kira", include_bytes!("../agentes/kira.png")),

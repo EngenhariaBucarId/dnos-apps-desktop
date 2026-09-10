@@ -56,6 +56,62 @@ fn navegacao_interna(url: &url::Url, host_da_instancia: &str) -> bool {
 /// `window.open` para o navegador do sistema, pela ponte do Tauri.
 const SCRIPT_INICIAL: &str = r#"
 (() => {
+  // Abertura contínua (0.5.13): a roda dos agentes da casca continua NA PÁGINA
+  // do app até o React montar (#root com filhos). Antes, a casca navegava e a
+  // pessoa via a tela branca/azul do bundle carregando por alguns segundos.
+  // Injetado no início do documento, então é a primeira pintura da página.
+  try {
+    if (location.protocol.startsWith("http") && !window.__DNOS_ABRINDO__) {
+      window.__DNOS_ABRINDO__ = true;
+      const F = window.__DNOS_FOTOS__ || {};
+      const AG = ["lia", "milo", "kira", "malu", "radar", "rock", "sigma", "koringa"];
+      const montarOverlay = () => {
+        const raizDoc = document.documentElement; if (!raizDoc) return false;
+        if (document.getElementById("dnos-abrindo")) return true;
+        const st = document.createElement("style");
+        st.textContent = `#dnos-abrindo{position:fixed;inset:0;z-index:2147483646;background:#0B0F1A;color:#8A90A6;display:grid;place-items:center;transition:opacity .45s;font:14px Inter,-apple-system,system-ui,sans-serif;-webkit-user-select:none;user-select:none}
+#dnos-abrindo .palco{position:relative;width:312px;height:312px}
+#dnos-abrindo .anel{position:absolute;inset:0;animation:dnos-orbita 40s linear infinite}
+#dnos-abrindo .anel::before{content:"";position:absolute;inset:34px;border-radius:50%;border:1px solid rgba(61,97,255,.14);box-shadow:0 0 60px rgba(61,97,255,.1) inset,0 0 48px rgba(61,97,255,.06)}
+#dnos-abrindo .agente{position:absolute;top:50%;left:50%;width:54px;height:54px;margin:-27px 0 0 -27px;transform:rotate(var(--a)) translate(122px) rotate(calc(-1 * var(--a)))}
+#dnos-abrindo .agente img{display:block;width:100%;height:100%;border-radius:50%;filter:drop-shadow(0 6px 14px rgba(0,0,0,.55)) drop-shadow(0 0 10px rgba(61,97,255,.18));animation:dnos-contra 40s linear infinite}
+#dnos-abrindo .marca{position:absolute;inset:0;display:grid;place-items:center}
+#dnos-abrindo .marca img{width:96px;height:96px;display:block;filter:drop-shadow(0 8px 22px rgba(0,0,0,.6)) drop-shadow(0 0 18px rgba(61,97,255,.28))}
+#dnos-abrindo .pulso{position:absolute;left:50%;top:calc(50% + 66px);width:8px;height:8px;margin-left:-4px;border-radius:50%;background:#3D61FF;animation:dnos-p 1.2s ease-in-out infinite}
+#dnos-abrindo p{margin:.75rem 0 0;text-align:center}
+@keyframes dnos-orbita{to{transform:rotate(360deg)}}@keyframes dnos-contra{to{transform:rotate(-360deg)}}@keyframes dnos-p{50%{opacity:.25;transform:scale(.7)}}
+@media (prefers-reduced-motion:reduce){#dnos-abrindo .pulso,#dnos-abrindo .anel,#dnos-abrindo .agente img{animation:none}}`;
+        const el = document.createElement("div"); el.id = "dnos-abrindo"; el.setAttribute("aria-hidden", "true");
+        const caixa = document.createElement("div");
+        const palco = document.createElement("div"); palco.className = "palco";
+        const anel = document.createElement("div"); anel.className = "anel";
+        AG.forEach((n, i) => {
+          if (!F[n]) return;
+          const ag = document.createElement("div"); ag.className = "agente";
+          ag.style.setProperty("--a", (i * 360 / AG.length - 90) + "deg");
+          const img = document.createElement("img"); img.src = F[n]; img.alt = ""; img.draggable = false;
+          ag.appendChild(img); anel.appendChild(ag);
+        });
+        const marca = document.createElement("div"); marca.className = "marca";
+        if (F.icone) { const ic = document.createElement("img"); ic.src = F.icone; ic.alt = "dn.os"; ic.draggable = false; marca.appendChild(ic); }
+        const pulso = document.createElement("span"); pulso.className = "pulso"; marca.appendChild(pulso);
+        palco.appendChild(anel); palco.appendChild(marca);
+        const txt = document.createElement("p"); txt.textContent = "Abrindo o seu dn.os…";
+        caixa.appendChild(palco); caixa.appendChild(txt);
+        el.appendChild(st); el.appendChild(caixa);
+        raizDoc.appendChild(el);
+        return true;
+      };
+      const tirar = () => { const el = document.getElementById("dnos-abrindo"); if (!el) return; el.style.opacity = "0"; setTimeout(() => el.remove(), 500); };
+      const montou = () => { const r = document.getElementById("root"); return !!(r && r.childElementCount); };
+      const t0 = Date.now();
+      // documentElement pode ainda não existir no início do documento: insiste por 2 s.
+      const tenta = setInterval(() => { if (montarOverlay() || Date.now() - t0 > 2000) clearInterval(tenta); }, 5);
+      const vigia = setInterval(() => {
+        if (montou() || Date.now() - t0 > 15000) { clearInterval(vigia); setTimeout(tirar, montou() ? 250 : 0); }
+      }, 100);
+    }
+  } catch {}
   // Abre no navegador do sistema por três caminhos, do mais direto ao mais
   // robusto: API do plugin (quando injetada), invoke do core (sempre existe
   // com withGlobalTauri), evento que o Rust ouve (dnos://abrir-url). Cada
@@ -103,7 +159,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.5.12", meuChrome: true, gravador: true, roteiro: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.5.13", meuChrome: true, gravador: true, roteiro: true };
 })();
 "#;
 
@@ -112,7 +168,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.12", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.13", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -140,6 +196,19 @@ const SCRIPT_APRESENTACAO: &str = r#"
   if (recarregou) setTimeout(() => location.reload(), 50);
 })();
 "#;
+
+/// As 8 fotos (56 px, as mesmas da barra) e o ícone do app como data URIs, para a
+/// roda de abertura continuar na página do app (ver SCRIPT_INICIAL). ~45 KB.
+fn fotos_da_abertura() -> String {
+    use base64::Engine;
+    let b64 = |bytes: &[u8]| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+    let mut m = serde_json::Map::new();
+    for (nome, bytes) in barra::FOTOS_EMBUTIDAS.iter() {
+        m.insert((*nome).to_string(), serde_json::Value::String(b64(bytes)));
+    }
+    m.insert("icone".to_string(), serde_json::Value::String(b64(include_bytes!("../../ui/icone.png"))));
+    serde_json::Value::Object(m).to_string()
+}
 
 /// `dnos://chat/lia` → `https://<instância>/chat/lia`. Sem caminho, abre a raiz.
 fn destino_do_deep_link(base: &str, link: &str) -> Option<String> {
@@ -238,7 +307,7 @@ pub fn run() {
                 .ok()
                 .and_then(|u| u.host_str().map(|h| h.to_string()))
                 .unwrap_or_default();
-            let script = format!("window.__DNOS_URL__ = {};{}", serde_json::to_string(&base)?, SCRIPT_INICIAL);
+            let script = format!("window.__DNOS_URL__ = {};window.__DNOS_FOTOS__ = {};{}", serde_json::to_string(&base)?, fotos_da_abertura(), SCRIPT_INICIAL);
 
             let handle_nav = app.handle().clone();
             let host_nav = host.clone();
