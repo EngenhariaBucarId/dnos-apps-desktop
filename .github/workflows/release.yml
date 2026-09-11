@@ -24,9 +24,21 @@ jobs:
             args: "--target universal-apple-darwin"
           - platform: windows-latest
             args: ""
+          # Linux (11/09): .deb, .rpm e .AppImage. Ubuntu 22.04 de propósito: o
+          # AppImage gerado num Ubuntu mais novo exige glibc que máquinas de
+          # trabalho ainda não têm.
+          - platform: ubuntu-22.04
+            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      # Dependências do Tauri 2 e do cpal (microfone do Aprenda comigo) no Linux.
+      - name: Dependências do Linux
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf
 
       - uses: actions/setup-node@v4
         with:
@@ -59,7 +71,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "dn.os Desktop ${{ github.ref_name }}"
           releaseBody: |
-            Instaladores do dn.os Desktop. Mac: baixe o `.dmg`. Windows: baixe o `-setup.exe`.
+            Instaladores do dn.os Desktop. Mac: baixe o `.dmg`. Windows: baixe o `-setup.exe`. Linux: `.AppImage` (qualquer distro), `.deb` (Ubuntu/Debian) ou `.rpm` (Fedora).
             Primeira abertura sem assinatura: veja o README do repositório.
           releaseDraft: false
           prerelease: false
