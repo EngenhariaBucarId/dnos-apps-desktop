@@ -9,7 +9,7 @@
 //!
 //! Eventos da página:
 //!   `dnos://gravador/iniciar {nome?, modo:"mac"}` — cai aqui (gravador.rs despacha).
-//!   `dnos://maquina/permissoes {pedir?}` → `dnos://maquina/permissoes {acessibilidade, tela, ajudante}`.
+//!   `dnos://maquina/permissoes {pedir?}` → `dnos://maquina/permissoes-estado {acessibilidade, tela, ajudante, casca, versao}`.
 //! Nota, parar, estado, listar, abrir, apagar: os mesmos do gravador do Chrome —
 //! a gravação sai no mesmo JSON, com `modo: "mac"`, para a mesma revisão.
 //!
@@ -102,7 +102,9 @@ pub fn instalar(app: &AppHandle) {
         std::thread::spawn(move || {
             let r = permissoes(&h2, pedir);
             meu_chrome::registrar(&h2, &format!("maquina: permissoes {r}"));
-            let _ = h2.emit("dnos://maquina/permissoes", r);
+            // Nome DIFERENTE do que a casca escuta: emitir no mesmo nome fazia a
+            // casca responder a si mesma sem parar (0.6.0/0.6.1: 60 mil linhas de diário em 30 min).
+            let _ = h2.emit("dnos://maquina/permissoes-estado", r);
         });
     });
 }
