@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Com assinatura própria o app roda com "hardened runtime" (13/09): nesse modo o
+       macOS só pergunta sobre o microfone se este direito estiver declarado
+       (tccd: "requires entitlement com.apple.security.device.audio-input"). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>
