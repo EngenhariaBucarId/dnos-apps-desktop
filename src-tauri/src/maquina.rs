@@ -148,6 +148,7 @@ pub async fn executar(app: AppHandle, pedido: Value) {
     let nome = pedido["nome"].as_str().unwrap_or("habilidade").to_string();
     let criterio = pedido["criterio"].as_str().unwrap_or("").to_string();
     let agente = pedido["agente"].as_str().unwrap_or("").to_string();
+    let id = pedido["id"].as_str().unwrap_or("").to_string();
     let passos: Vec<Value> = pedido["passos"].as_array().cloned().unwrap_or_default();
     if passos.is_empty() { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": "roteiro sem passos executáveis" })); }
     let total = passos.len();
@@ -170,7 +171,7 @@ pub async fn executar(app: AppHandle, pedido: Value) {
     }
     mostrar_barra(&app);
     let _ = app.emit("dnos://barra-mac", json!({ "agente": agente, "titulo": nome, "sub": format!("preparando · {total} passos") }));
-    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "passo": 0, "total": total, "texto": "preparando" }));
+    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "id": id, "passo": 0, "total": total, "texto": "preparando" }));
     let mut fim = json!({ "estado": "erro", "modo": "mac", "motivo": "o executor da máquina fechou sem terminar" });
     while let Some(v) = rx.recv().await {
         match v["t"].as_str().unwrap_or("") {
@@ -178,12 +179,12 @@ pub async fn executar(app: AppHandle, pedido: Value) {
                 if v["estado"].as_str() == Some("rodando") {
                     let texto = v["texto"].as_str().unwrap_or("").to_string();
                     let _ = app.emit("dnos://barra-mac", json!({ "agente": agente, "titulo": nome, "sub": format!("passo {} de {} · {}", v["n"], total, texto) }));
-                    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "passo": v["n"], "total": total, "texto": texto }));
+                    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "id": id, "passo": v["n"], "total": total, "texto": texto }));
                 }
             }
-            "parou" => { fim = json!({ "estado": "parou", "modo": "mac", "passo": v["passo"], "total": total, "texto": v["texto"], "motivo": v["motivo"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
-            "concluido" => { fim = json!({ "estado": "concluido", "modo": "mac", "total": total, "ms": v["ms"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
-            "erro" => { fim = json!({ "estado": "erro", "modo": "mac", "motivo": v["motivo"] }); break; }
+            "parou" => { fim = json!({ "estado": "parou", "modo": "mac", "id": id, "passo": v["passo"], "total": total, "texto": v["texto"], "motivo": v["motivo"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
+            "concluido" => { fim = json!({ "estado": "concluido", "modo": "mac", "id": id, "total": total, "ms": v["ms"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
+            "erro" => { fim = json!({ "estado": "erro", "modo": "mac", "id": id, "motivo": v["motivo"] }); break; }
             _ => {}
         }
     }
@@ -194,8 +195,95 @@ pub async fn executar(app: AppHandle, pedido: Value) {
     emitir_roteiro(&app, fim);
 }
 
+/// Nó do Mac (fase 2B, 13/09): a casca fica conectada ao relay da VPS
+/// (`wss://tela.<domínio>/node?tipo=mac`, mesmo auth do Meu Chrome) esperando
+/// pedidos de roteiro do agente; devolve o andamento por `{t:"roteiro-estado"}`.
+/// A página manda `dnos://maquina/no {endereco, token}` ao entrar (e renova).
+#[derive(Default)]
+pub struct NoMac { pub endereco: String, pub token: String, pub geracao: u64 }
+pub type NoMacCompartilhado = Arc<Mutex<NoMac>>;
+
+async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let mut espera = 5u64;
+    loop {
+        let (endereco, token, gen) = match estado.lock() { Ok(g) => (g.endereco.clone(), g.token.clone(), g.geracao), Err(_) => return };
+        if gen != geracao || endereco.is_empty() || token.is_empty() { return; } // outra conexão assumiu, ou saiu
+        let url = format!("{}/node?tipo=mac", endereco.trim_end_matches('/'));
+        match tokio_tungstenite::connect_async(&url).await {
+            Ok((ws, _)) => {
+                espera = 5;
+                let (mut tx, mut rx) = ws.split();
+                let versao = app.package_info().version.to_string();
+                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao }).to_string().into())).await.is_err() { continue; }
+                meu_chrome::registrar(&app, "no-mac: conectado ao relay");
+                // Andamento do roteiro → relay (só os eventos com id, que vieram de lá).
+                let (para_relay, mut fila) = mpsc::unbounded_channel::<String>();
+                let ouvinte = app.listen_any("dnos://roteiro", move |ev| {
+                    if let Ok(v) = serde_json::from_str::<Value>(ev.payload()) {
+                        if v["modo"] == "mac" && v["id"].as_str().map(|s| !s.is_empty()).unwrap_or(false) {
+                            let mut m = v.clone(); m["t"] = json!("roteiro-estado");
+                            let _ = para_relay.send(m.to_string());
+                        }
+                    }
+                });
+                let mut pulso = tokio::time::interval(std::time::Duration::from_secs(25));
+                loop {
+                    tokio::select! {
+                        Some(m) = fila.recv() => { if tx.send(Message::Text(m.into())).await.is_err() { break; } }
+                        _ = pulso.tick() => { if tx.send(Message::Text(json!({ "t": "ping" }).to_string().into())).await.is_err() { break; } }
+                        msg = rx.next() => {
+                            match msg {
+                                Some(Ok(Message::Text(t))) => {
+                                    if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                                        if v["t"] == "roteiro" {
+                                            meu_chrome::registrar(&app, &format!("no-mac: roteiro {} ({})", v["id"].as_str().unwrap_or("?").chars().take(8).collect::<String>(), v["nome"].as_str().unwrap_or("")));
+                                            let mut pedido = v.clone(); pedido["modo"] = json!("mac");
+                                            let _ = app.emit("dnos://roteiro/executar", pedido);
+                                        }
+                                    }
+                                }
+                                Some(Ok(Message::Close(_))) | None => break,
+                                Some(Err(_)) => break,
+                                _ => {}
+                            }
+                        }
+                    }
+                    if estado.lock().map(|g| g.geracao != geracao).unwrap_or(true) { let _ = tx.close().await; app.unlisten(ouvinte); return; }
+                }
+                app.unlisten(ouvinte);
+                meu_chrome::registrar(&app, "no-mac: conexão caiu, religando");
+            }
+            Err(e) => { meu_chrome::registrar(&app, &format!("no-mac: não conectei ({e}); tento de novo em {espera}s")); }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(espera)).await;
+        espera = (espera * 2).min(120);
+    }
+}
+
 pub fn instalar(app: &AppHandle) {
     app.manage::<ExecucaoCompartilhada>(Arc::new(Mutex::new(ExecucaoMac::default())));
+    app.manage::<NoMacCompartilhado>(Arc::new(Mutex::new(NoMac::default())));
+    let h = app.clone();
+    app.listen_any("dnos://maquina/no", move |evento| {
+        if !disponivel() { return; }
+        let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
+        let endereco = v["endereco"].as_str().unwrap_or("").trim().to_string();
+        let token = v["token"].as_str().unwrap_or("").trim().to_string();
+        let Some(estado) = h.try_state::<NoMacCompartilhado>() else { return };
+        let estado = estado.inner().clone();
+        let geracao = match estado.lock() {
+            Ok(mut g) => {
+                // Mesmo endereço e token: só renova, sem religar. Token novo ou sair (vazio): nova geração.
+                if g.endereco == endereco && g.token == token && !token.is_empty() { return; }
+                g.endereco = endereco; g.token = token; g.geracao += 1; g.geracao
+            }
+            Err(_) => return,
+        };
+        let h2 = h.clone();
+        tauri::async_runtime::spawn(async move { no_mac(h2, estado, geracao).await });
+    });
     let h = app.clone();
     app.listen_any("dnos://maquina/permissoes", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
