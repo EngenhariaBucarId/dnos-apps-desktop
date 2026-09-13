@@ -107,14 +107,9 @@ mod microfone {
         match estado() {
             3 => true,
             0 => {
-                crate::voz::cutucar_microfone();
-                let fim = std::time::Instant::now() + std::time::Duration::from_secs(120);
-                while std::time::Instant::now() < fim {
-                    let e = estado();
-                    if e != 0 { return e == 3; }
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-                false
+                // Segura o microfone aberto enquanto a pergunta está na tela (até 2 min).
+                crate::voz::segurar_microfone_ate(&|| estado() != 0, std::time::Duration::from_secs(120));
+                estado() == 3
             }
             _ => {
                 let _ = std::process::Command::new("/usr/bin/open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone").status();
