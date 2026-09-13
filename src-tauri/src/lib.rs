@@ -15,6 +15,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod barra;
 mod gravador;
+mod maquina;
 mod meu_chrome;
 mod roteiro;
 mod voz;
@@ -159,7 +160,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "0.5.14", meuChrome: true, gravador: true, roteiro: true };
+  window.__DNOS_DESKTOP__ = { versao: "0.6.0", meuChrome: true, gravador: true, roteiro: true, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__ };
 })();
 "#;
 
@@ -168,7 +169,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.5.14", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "0.6.0", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__ });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -307,7 +308,7 @@ pub fn run() {
                 .ok()
                 .and_then(|u| u.host_str().map(|h| h.to_string()))
                 .unwrap_or_default();
-            let script = format!("window.__DNOS_URL__ = {};window.__DNOS_FOTOS__ = {};{}", serde_json::to_string(&base)?, fotos_da_abertura(), SCRIPT_INICIAL);
+            let script = format!("window.__DNOS_URL__ = {};window.__DNOS_FOTOS__ = {};window.__DNOS_GRAVADOR_MAC__ = {};{}", serde_json::to_string(&base)?, fotos_da_abertura(), maquina::disponivel(), SCRIPT_INICIAL);
 
             let handle_nav = app.handle().clone();
             let host_nav = host.clone();
@@ -365,6 +366,8 @@ pub fn run() {
             meu_chrome::instalar(app.handle());
             // Aprenda comigo (fase 3a): gravador de demonstrações no Chrome do dn.os.
             gravador::instalar(app.handle());
+            // Aprenda comigo, fase 1 (13/09): gravador da máquina toda (só macOS).
+            maquina::instalar(app.handle());
             // Barra dentro do Chrome da pessoa e voz para notas.
             barra::instalar(app.handle());
             voz::instalar(app.handle());

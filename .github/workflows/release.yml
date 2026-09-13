@@ -52,6 +52,12 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # Ajudante do gravador da máquina (Swift, universal): embutido na casca
+      # por include_bytes! em maquina.rs. Só no Mac.
+      - name: Ajudante gravador-mac (Swift)
+        if: startsWith(matrix.platform, 'macos')
+        run: bash src-tauri/ajudantes/compilar.sh
+
       - run: npm ci
 
       - uses: tauri-apps/tauri-action@v0

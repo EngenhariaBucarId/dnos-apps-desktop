@@ -1,0 +1,25 @@
+# Verificação sem release: em qualquer branch que não seja tag, compila o
+# ajudante Swift e roda cargo check + cargo test no Mac. É o laço de feedback
+# para quem não consegue linkar localmente (CLT antigas).
+name: verificar
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Ajudante gravador-mac (Swift)
+        run: bash src-tauri/ajudantes/compilar.sh
+      - name: Ajudante responde
+        run: src-tauri/ajudantes/dnos-gravador-mac permissoes
+      - name: cargo check
+        run: cd src-tauri && cargo check 2>&1 | tail -40
+      - name: cargo test
+        run: cd src-tauri && cargo test 2>&1 | tail -40

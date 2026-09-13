@@ -6,3 +6,5 @@ src-tauri/gen/schemas/
 # chave PRIVADA do updater nunca entra no repo (fica em GitHub Secrets e no cofre)
 *.key
 *.key.pub
+# ajudante Swift compilado no CI (fonte: src-tauri/ajudantes/gravador-mac.swift)
+src-tauri/ajudantes/dnos-gravador-mac

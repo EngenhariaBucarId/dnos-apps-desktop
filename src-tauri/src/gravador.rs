@@ -10,7 +10,7 @@
 //! `<app_data>/gravacoes/<id>.json`, entregue à página pelo evento
 //! `dnos://gravador/pronta` — dali a página manda compilar em habilidade.
 //!
-//! Eventos que a página emite: `dnos://gravador/iniciar {nome?}`,
+//! Eventos que a página emite: `dnos://gravador/iniciar {nome?, modo?}` (modo "mac" = máquina toda, ver maquina.rs),
 //! `dnos://gravador/nota {texto}`, `dnos://gravador/parar {criterio?}`,
 //! `dnos://gravador/estado`, `dnos://gravador/listar`.
 //! A casca responde em `dnos://gravador` `{estado: "gravando"|"parado"|"erro", passos, id?, motivo?}`
@@ -79,23 +79,23 @@ const SCRIPT_DA_PAGINA: &str = r#"
 
 #[derive(Default)]
 pub struct Gravador {
-    ativa: Option<Ativa>,
+    pub(crate) ativa: Option<Ativa>,
 }
 
-struct Ativa {
-    id: String,
-    passos: usize,
-    notas: mpsc::UnboundedSender<Value>,
-    parar: mpsc::UnboundedSender<(Option<String>, Option<String>)>, // (critério, nome)
+pub(crate) struct Ativa {
+    pub(crate) id: String,
+    pub(crate) passos: usize,
+    pub(crate) notas: mpsc::UnboundedSender<Value>,
+    pub(crate) parar: mpsc::UnboundedSender<(Option<String>, Option<String>)>, // (critério, nome)
 }
 
 pub type Compartilhado = Arc<Mutex<Gravador>>;
 
-fn agora_ms() -> u64 {
+pub(crate) fn agora_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-fn emitir(app: &AppHandle, estado: &str, passos: usize, id: Option<&str>, motivo: Option<String>) {
+pub(crate) fn emitir(app: &AppHandle, estado: &str, passos: usize, id: Option<&str>, motivo: Option<String>) {
     let mut v = json!({ "estado": estado, "passos": passos });
     if let Some(i) = id { v["id"] = json!(i); }
     if let Some(m) = motivo { v["motivo"] = json!(m); }
@@ -103,7 +103,7 @@ fn emitir(app: &AppHandle, estado: &str, passos: usize, id: Option<&str>, motivo
     let _ = app.emit("dnos://gravador", v);
 }
 
-fn pasta(app: &AppHandle) -> Option<std::path::PathBuf> {
+pub(crate) fn pasta(app: &AppHandle) -> Option<std::path::PathBuf> {
     let p = app.path().app_data_dir().ok()?.join("gravacoes");
     std::fs::create_dir_all(&p).ok()?;
     Some(p)
@@ -127,9 +127,13 @@ pub fn instalar(app: &AppHandle) {
     app.listen_any("dnos://gravador/iniciar", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
         let nome = v["nome"].as_str().unwrap_or("").to_string();
+        // modo "mac" (13/09): a máquina toda, pelo ajudante em Swift (maquina.rs).
+        let na_maquina = v["modo"].as_str() == Some("mac");
         let h2 = h.clone();
         let e2 = e.clone();
-        tauri::async_runtime::spawn(async move { iniciar(h2, e2, nome).await });
+        tauri::async_runtime::spawn(async move {
+            if na_maquina { crate::maquina::iniciar(h2, e2, nome).await } else { iniciar(h2, e2, nome).await }
+        });
     });
 
     let e = estado.clone();
@@ -468,7 +472,7 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
 }
 
 /// "06/09 08:41" sem puxar a crate chrono: só para o nome padrão.
-fn chrono_curto() -> String {
+pub(crate) fn chrono_curto() -> String {
     let s = agora_ms() / 1000;
     let dias = s / 86400; let resto = s % 86400;
     // Dias desde 1970 → data civil (algoritmo de Howard Hinnant).
