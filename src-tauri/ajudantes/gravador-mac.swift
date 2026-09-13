@@ -54,6 +54,15 @@ func telaOk(pedir: Bool) -> Bool {
     return unsafeBitCast(sym, to: Fn.self)()
 }
 
+/// Abre um painel de Privacidade e Segurança e ESPERA o `open` terminar: com
+/// NSWorkspace.open o ajudante saía antes de o pedido ser despachado (13/09).
+func abrirPainel(_ ancora: String) {
+    let p = Process()
+    p.launchPath = "/usr/bin/open"
+    p.arguments = ["x-apple.systempreferences:com.apple.preference.security?" + ancora]
+    p.launch(); p.waitUntilExit()
+}
+
 /// Microfone (notas por voz, 13/09): sem autorização o macOS entrega silêncio
 /// absoluto, sem erro — a casca via "sem sinal" e culpava o dispositivo.
 func microfoneOk(pedir: Bool) -> Bool {
@@ -67,7 +76,7 @@ func microfoneOk(pedir: Bool) -> Bool {
         _ = sem.wait(timeout: .now() + 120)
         return ok
     }
-    if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") { NSWorkspace.shared.open(u) }
+    abrirPainel("Privacy_Microphone")
     return false
 }
 
@@ -855,7 +864,7 @@ if modo == "permissoes" {
             if !tela {
                 // Sequoia às vezes só registra o app na lista quando ele tenta capturar de fato.
                 _ = CGWindowListCreateImage(CGRect(x: 0, y: 0, width: 1, height: 1), .optionOnScreenOnly, kCGNullWindowID, [])
-                if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(u) }
+                abrirPainel("Privacy_ScreenCapture")
             }
         }
     }
