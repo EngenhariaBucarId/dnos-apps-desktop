@@ -19,6 +19,7 @@
 // Compila com o Swift 5.3 / SDK 10.15 (CLT antigas): sem ScreenCaptureKit,
 // foto pelo CGWindowListCreateImage.
 
+import AVFoundation
 import Cocoa
 import ApplicationServices
 
@@ -51,6 +52,23 @@ func telaOk(pedir: Bool) -> Bool {
     let nome = pedir ? "CGRequestScreenCaptureAccess" : "CGPreflightScreenCaptureAccess"
     guard let h = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY), let sym = dlsym(h, nome) else { return true }
     return unsafeBitCast(sym, to: Fn.self)()
+}
+
+/// Microfone (notas por voz, 13/09): sem autorização o macOS entrega silêncio
+/// absoluto, sem erro — a casca via "sem sinal" e culpava o dispositivo.
+func microfoneOk(pedir: Bool) -> Bool {
+    let estado = AVCaptureDevice.authorizationStatus(for: .audio)
+    if estado == .authorized { return true }
+    if !pedir { return false }
+    if estado == .notDetermined {
+        let sem = DispatchSemaphore(value: 0)
+        var ok = false
+        AVCaptureDevice.requestAccess(for: .audio) { r in ok = r; sem.signal() }
+        _ = sem.wait(timeout: .now() + 120)
+        return ok
+    }
+    if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") { NSWorkspace.shared.open(u) }
+    return false
 }
 
 // ───────────────────────── acessibilidade ─────────────────────────
@@ -826,9 +844,12 @@ if modo == "permissoes" {
     // juntos — pedir os dois de uma vez deixava o segundo sem pergunta (13/09).
     var ax = acessibilidadeOk(pedir: false)
     var tela = telaOk(pedir: false)
+    var mic = microfoneOk(pedir: false)
     if pedir {
         if !ax {
             ax = acessibilidadeOk(pedir: true)
+        } else if tela && !mic {
+            mic = microfoneOk(pedir: true)
         } else if !tela {
             tela = telaOk(pedir: true)
             if !tela {
@@ -838,7 +859,7 @@ if modo == "permissoes" {
             }
         }
     }
-    linha(["acessibilidade": ax, "tela": tela])
+    linha(["acessibilidade": ax, "tela": tela, "microfone": mic])
     exit(0)
 }
 if modo == "gravar" {

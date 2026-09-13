@@ -142,7 +142,7 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
             if pode_trocar { drop(stream); return Ok(Fim::SemSinal); }
             avisou_mudo = true;
             meu_chrome::registrar(app, &format!("voz: {nome_dev} sem sinal há 3 s (permissão negada ou dispositivo mudo?)"));
-            avisar_microfone(app, nome_dev, false, "sem sinal: confira o microfone em Ajustes do Sistema → Som → Entrada e a permissão do dn.os em Privacidade → Microfone");
+            avisar_microfone(app, nome_dev, false, "sem sinal: em Ajustes › Privacidade e Segurança › Microfone o dn.os precisa estar ligado. Se já aparece ligado, desligue e ligue de novo e reabra o dn.os (cada versão é um app novo para o macOS). Depois confira a entrada em Som › Entrada.");
         }
         let pedaco: Vec<f32> = { let mut a = acumulado.lock().map_err(|_| "trava")?; std::mem::take(&mut *a) };
         if pedaco.is_empty() {
