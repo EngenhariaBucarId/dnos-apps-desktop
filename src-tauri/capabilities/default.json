@@ -3,7 +3,8 @@
   "identifier": "default",
   "description": "Janela principal: a página local (carregando / sem conexão) e a instância web do dn.os. A instância remota precisa das mesmas permissões para notificação nativa, deep link e abrir link externo.",
   "windows": [
-    "main"
+    "main",
+    "barra-mac"
   ],
   "remote": {
     "urls": [

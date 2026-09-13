@@ -72,10 +72,12 @@ pub fn instalar(app: &AppHandle) {
     app.listen_any("dnos://roteiro/executar", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
         let h2 = h.clone();
-        tauri::async_runtime::spawn(async move { executar(h2, v).await });
+        // modo "mac" (fase 2, 13/09): a máquina toda, pelo ajudante (maquina.rs).
+        if v["modo"].as_str() == Some("mac") { tauri::async_runtime::spawn(async move { crate::maquina::executar(h2, v).await }); }
+        else { tauri::async_runtime::spawn(async move { executar(h2, v).await }); }
     });
     let h = app.clone();
-    app.listen_any("dnos://roteiro/parar", move |_| parar(&h));
+    app.listen_any("dnos://roteiro/parar", move |_| { parar(&h); crate::maquina::parar(&h); });
 }
 
 /// Cancela o roteiro em andamento (pela página ou pelo Parar da barra do Chrome).

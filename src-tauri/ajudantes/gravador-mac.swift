@@ -455,6 +455,338 @@ func gravar() {
     CFRunLoopRun()
 }
 
+
+// ───────────────────────── execução (fase 2) ─────────────────────────
+//
+//   dnos-gravador-mac executar --roteiro <arquivo.json> [--ignorar <bundleId>]
+//
+// Lê {nome, passos:[…]} (os passos da gravação da máquina) e executa no Mac da
+// pessoa, sem modelo: acha o alvo pela Acessibilidade (papel + título/descrição/
+// id/valor, com o caminho de ancestrais como desempate; coordenada relativa à
+// janela como último recurso), clica (AXPress quando o elemento aceita, senão
+// mouse de verdade), digita (AXValue quando é campo, senão teclado), tecla,
+// atalho, rolagem, arrasto e troca de app. Depois de cada passo espera a tela
+// mudar (o alvo do próximo passo aparecer, até 8 s). Passo que não bate → para
+// e devolve {t:"parou", passo, motivo, app, janela, foto}. Progresso: uma linha
+// JSON por passo. Parar: "parar" no stdin, SIGTERM, ou Esc duas vezes seguidas.
+
+final class Execucao {
+    var parar = false
+    let trava = NSLock()
+    func pediuParar() -> Bool { trava.lock(); defer { trava.unlock() }; return parar }
+    func mandarParar() { trava.lock(); parar = true; trava.unlock() }
+}
+let execucao = Execucao()
+
+func dormir(_ ms: Int) { usleep(useconds_t(max(0, ms) * 1000)) }
+
+func norm(_ s: String?) -> String {
+    return (s ?? "").replacingOccurrences(of: "\u{2026}", with: "").replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
+/// Ativa (ou abre) o app pelo bundle id e espera ficar na frente.
+func ativarApp(bundle: String, nome: String) -> Bool {
+    if bundle.isEmpty { return false }
+    if let a = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first {
+        a.activate(options: [.activateIgnoringOtherApps])
+    } else {
+        if !NSWorkspace.shared.launchApplication(withBundleIdentifier: bundle, options: [], additionalEventParamDescriptor: nil, launchIdentifier: nil) { return false }
+    }
+    for _ in 0..<40 {
+        if let f = appDaFrente(), f.bundle == bundle { dormir(250); return true }
+        dormir(250)
+    }
+    return false
+}
+
+/// Percorre a árvore de acessibilidade do app da frente e devolve o elemento que
+/// mais parece com o alvo gravado. Pontuação: papel obrigatório; título, descrição,
+/// identificador, valor (texto estático) e caminho de ancestrais somam.
+func acharElemento(alvo: [String: Any], pid: pid_t) -> (AXUIElement, Int)? {
+    let papel = alvo["papel"] as? String ?? ""
+    let subpapel = alvo["subpapel"] as? String ?? ""
+    let titulo = norm(alvo["titulo"] as? String), desc = norm(alvo["descricao"] as? String)
+    let ident = norm(alvo["id"] as? String), valor = norm(alvo["valor"] as? String)
+    let caminho = (alvo["caminho"] as? [String]) ?? []
+    let ultimoPai = norm(caminho.last)
+    if papel.isEmpty { return nil }
+    let app = AXUIElementCreateApplication(pid)
+    var raizes: [AXUIElement] = []
+    if let w = axElemento(axAtributo(app, kAXFocusedWindowAttribute)) { raizes.append(w) }
+    if let ws = axAtributo(app, kAXWindowsAttribute) as? [AnyObject] { for w in ws { if let e = axElemento(w) { raizes.append(e) } } }
+    // menus abertos ficam fora das janelas
+    if let mb = axElemento(axAtributo(app, kAXMenuBarAttribute)) { raizes.append(mb) }
+    var fila: [(AXUIElement, Int, String)] = raizes.map { ($0, 0, "") }
+    var melhor: (AXUIElement, Int)? = nil
+    var visitados = 0
+    while !fila.isEmpty && visitados < 6000 {
+        let (el, prof, pai) = fila.removeFirst(); visitados += 1
+        let p = axTexto(el, kAXRoleAttribute)
+        if p == papel {
+            var pontos = 10
+            let t = norm(axTexto(el, kAXTitleAttribute)), d = norm(axTexto(el, kAXDescriptionAttribute)), i = norm(axTexto(el, kAXIdentifierAttribute))
+            if !ident.isEmpty && i == ident { pontos += 90 }
+            if !titulo.isEmpty { if t == titulo { pontos += 100 } else if !t.isEmpty && (t.contains(titulo) || titulo.contains(t)) { pontos += 40 } }
+            if !desc.isEmpty { if d == desc { pontos += 80 } else if !d.isEmpty && (d.contains(desc) || desc.contains(d)) { pontos += 30 } }
+            if !valor.isEmpty && p == "AXStaticText" { let v = norm(axTexto(el, kAXValueAttribute)); if v == valor { pontos += 70 } else if v.contains(valor) { pontos += 25 } }
+            if !subpapel.isEmpty && axTexto(el, kAXSubroleAttribute) == subpapel { pontos += 10 }
+            if !ultimoPai.isEmpty && norm(pai).hasPrefix(ultimoPai.components(separatedBy: " '").first ?? "") { pontos += 5 }
+            if axRetangulo(el) == nil { pontos -= 50 }
+            let temNome = !titulo.isEmpty || !desc.isEmpty || !ident.isEmpty || !valor.isEmpty
+            if (!temNome && pontos >= 10) || pontos >= 40 {
+                if melhor == nil || pontos > melhor!.1 { melhor = (el, pontos) }
+            }
+        }
+        if prof < 28, let filhos = axAtributo(el, kAXChildrenAttribute) as? [AnyObject] {
+            let rotuloPai = p + " '" + corta(axTexto(el, kAXTitleAttribute), 40) + "'"
+            for f in filhos { if let fe = axElemento(f) { fila.append((fe, prof + 1, rotuloPai)) } }
+        }
+    }
+    return melhor
+}
+
+func centro(_ el: AXUIElement) -> CGPoint? {
+    guard let r = axRetangulo(el), let x = r["x"] as? Int, let y = r["y"] as? Int, let w = r["w"] as? Int, let h = r["h"] as? Int, w > 0, h > 0 else { return nil }
+    return CGPoint(x: Double(x) + Double(w) / 2, y: Double(y) + Double(h) / 2)
+}
+
+func mover(_ p: CGPoint) {
+    CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+}
+
+func clicarEm(_ p: CGPoint, direito: Bool = false, duplo: Bool = false) {
+    mover(p); dormir(60)
+    let down: CGEventType = direito ? .rightMouseDown : .leftMouseDown, up: CGEventType = direito ? .rightMouseUp : .leftMouseUp
+    let botao: CGMouseButton = direito ? .right : .left
+    for n in 1...(duplo ? 2 : 1) {
+        if let d = CGEvent(mouseEventSource: nil, mouseType: down, mouseCursorPosition: p, mouseButton: botao) { d.setIntegerValueField(.mouseEventClickState, value: Int64(n)); d.post(tap: .cghidEventTap) }
+        dormir(40)
+        if let u = CGEvent(mouseEventSource: nil, mouseType: up, mouseCursorPosition: p, mouseButton: botao) { u.setIntegerValueField(.mouseEventClickState, value: Int64(n)); u.post(tap: .cghidEventTap) }
+        if duplo { dormir(90) }
+    }
+}
+
+let TECLA_POR_NOME: [String: CGKeyCode] = ["enter": 36, "return": 36, "tab": 48, "escape": 53, "esc": 53, "backspace": 51, "delete": 117, "espaco": 49, "space": 49,
+    "esquerda": 123, "direita": 124, "baixo": 125, "cima": 126, "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
+    "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
+    "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32, "[": 33, "i": 34, "p": 35,
+    "l": 37, "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42, ",": 43, "/": 44, "n": 45, "m": 46, ".": 47]
+
+func pressionar(_ codigo: CGKeyCode, flags: CGEventFlags = []) {
+    if let d = CGEvent(keyboardEventSource: nil, virtualKey: codigo, keyDown: true) { d.flags = flags; d.post(tap: .cghidEventTap) }
+    dormir(30)
+    if let u = CGEvent(keyboardEventSource: nil, virtualKey: codigo, keyDown: false) { u.flags = flags; u.post(tap: .cghidEventTap) }
+}
+
+func teclaPorNome(_ nome: String) -> Bool {
+    guard let c = TECLA_POR_NOME[nome.lowercased()] else { return false }
+    pressionar(c); return true
+}
+
+/// "cmd+shift+S" → flags + tecla.
+func atalhoPorNome(_ combo: String) -> Bool {
+    var flags = CGEventFlags()
+    var tecla = ""
+    for parte in combo.split(separator: "+").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+        switch parte.lowercased() {
+        case "cmd", "command", "⌘": flags.insert(.maskCommand)
+        case "opt", "option", "alt", "⌥": flags.insert(.maskAlternate)
+        case "ctrl", "control", "⌃": flags.insert(.maskControl)
+        case "shift", "⇧": flags.insert(.maskShift)
+        default: tecla = parte
+        }
+    }
+    guard let c = TECLA_POR_NOME[tecla.lowercased()] else { return false }
+    pressionar(c, flags: flags); return true
+}
+
+func digitarTexto(_ texto: String) {
+    for ch in texto {
+        let u = Array(String(ch).utf16)
+        if let d = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) { d.keyboardSetUnicodeString(stringLength: u.count, unicodeString: u); d.post(tap: .cghidEventTap) }
+        if let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) { up.keyboardSetUnicodeString(stringLength: u.count, unicodeString: u); up.post(tap: .cghidEventTap) }
+        dormir(12)
+    }
+}
+
+func rolarEm(_ p: CGPoint, direcao: String, quanto: Int) {
+    mover(p)
+    let passos = max(1, min(30, quanto / 60))
+    for _ in 0..<passos {
+        if let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(direcao == "cima" ? 60 : -60), wheel2: 0, wheel3: 0) { e.post(tap: .cghidEventTap) }
+        dormir(25)
+    }
+}
+
+func arrastarDe(_ a: CGPoint, para b: CGPoint) {
+    mover(a); dormir(80)
+    CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left)?.post(tap: .cghidEventTap)
+    dormir(120)
+    for i in 1...12 {
+        let t = CGFloat(i) / 12.0
+        let p = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+        CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+        dormir(30)
+    }
+    dormir(80)
+    CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: b, mouseButton: .left)?.post(tap: .cghidEventTap)
+}
+
+func fraseDoPasso(_ p: [String: Any]) -> String {
+    let ax = p["ax"] as? [String: Any]
+    let nome = (ax?["titulo"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (ax?["descricao"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (ax?["valor"] as? String) ?? ""
+    switch p["t"] as? String ?? "" {
+    case "app": return "indo para " + ((p["app"] as? [String: Any])?["nome"] as? String ?? "o app")
+    case "clique": return "clicando em \"\(nome)\""
+    case "duplo": return "duplo clique em \"\(nome)\""
+    case "arrastar": return "arrastando"
+    case "digitar": return "digitando em \"\(nome)\""
+    case "tecla": return "pressionando \(p["tecla"] as? String ?? "")"
+    case "atalho": return "atalho \(p["tecla"] as? String ?? "")"
+    case "rolar": return "rolando para \(p["direcao"] as? String ?? "baixo")"
+    default: return p["t"] as? String ?? ""
+    }
+}
+
+/// Coordenada gravada relativa à janela → ponto de tela na janela atual (último recurso).
+func pontoRelativo(_ p: [String: Any], pid: pid_t) -> CGPoint? {
+    guard let c = p["coord"] as? [String: Any], let rx = c["rx"] as? Double, let ry = c["ry"] as? Double else { return nil }
+    guard let j = janelaFocada(pid), let r = j.ret, let jx = r["x"] as? Int, let jy = r["y"] as? Int, let jw = r["w"] as? Int, let jh = r["h"] as? Int, jw > 0, jh > 0 else { return nil }
+    // Só vale se a janela tem tamanho parecido com o da gravação (±25%).
+    if let gw = c["jw"] as? Int, let gh = c["jh"] as? Int, gw > 0, gh > 0 {
+        if abs(Double(jw - gw)) / Double(gw) > 0.25 || abs(Double(jh - gh)) / Double(gh) > 0.25 { return nil }
+    }
+    return CGPoint(x: CGFloat(Double(jx) + rx * Double(jw)), y: CGFloat(Double(jy) + ry * Double(jh)))
+}
+
+/// Acha o alvo do passo (elemento ou ponto), esperando até `ms` por ele aparecer.
+func esperarAlvo(_ p: [String: Any], pid: pid_t, ms: Int) -> (el: AXUIElement?, ponto: CGPoint?, como: String)? {
+    let ax = p["ax"] as? [String: Any]
+    let fim = Date().addingTimeInterval(Double(ms) / 1000)
+    repeat {
+        if execucao.pediuParar() { return nil }
+        if let ax = ax, let (el, _) = acharElemento(alvo: ax, pid: pid), let c = centro(el) { return (el, c, "acessibilidade") }
+        dormir(250)
+    } while Date() < fim
+    if let pt = pontoRelativo(p, pid: pid) { return (nil, pt, "coordenada") }
+    return nil
+}
+
+func executarRoteiro(_ roteiro: [String: Any], ignorar: String) {
+    let passos = (roteiro["passos"] as? [[String: Any]]) ?? []
+    let total = passos.count
+    let inicio = agoraMs()
+    if total == 0 { linha(["t": "erro", "motivo": "roteiro sem passos"]); return }
+    var bundleAtual = ""
+    for (i, p) in passos.enumerated() {
+        let n = i + 1
+        let frase = fraseDoPasso(p)
+        if execucao.pediuParar() { linha(["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": "você parou"]); return }
+        linha(["t": "passo", "n": n, "de": total, "texto": frase, "estado": "rodando"])
+        let tipo = p["t"] as? String ?? ""
+        // O app do passo: gravado no próprio passo (app.bundle); troca se preciso.
+        if let a = p["app"] as? [String: Any], let b = a["bundle"] as? String, !b.isEmpty, b != bundleAtual {
+            if b == ignorar { linha(["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": "o passo é dentro do próprio dn.os"]); return }
+            if !ativarApp(bundle: b, nome: a["nome"] as? String ?? "") { linha(["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": "não consegui abrir \(a["nome"] as? String ?? b)"]); return }
+            bundleAtual = b
+            dormir(400)
+        }
+        guard let app = appDaFrente() else { linha(["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": "nenhum app na frente"]); return }
+        let pid = app.pid
+        var falhou: String? = nil
+        switch tipo {
+        case "app":
+            break
+        case "clique", "duplo":
+            if let alvo = esperarAlvo(p, pid: pid, ms: 8000) {
+                let direito = (p["botao"] as? String) == "direito"
+                if tipo == "clique" && !direito, let el = alvo.el, ["AXButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXLink", "AXDisclosureTriangle"].contains(axTexto(el, kAXRoleAttribute)), AXUIElementPerformAction(el, kAXPressAction as CFString) == .success {
+                    // AXPress: o app executa a ação do controle sem depender da posição.
+                } else if let pt = alvo.ponto {
+                    clicarEm(pt, direito: direito, duplo: tipo == "duplo")
+                } else { falhou = "alvo sem posição" }
+            } else if !execucao.pediuParar() { falhou = "não achei o alvo na tela" }
+        case "arrastar":
+            let de = p["axDe"] as? [String: Any]
+            var a: CGPoint? = nil
+            if let de = de, let (el, _) = acharElemento(alvo: de, pid: pid) { a = centro(el) }
+            if a == nil, let d = p["de"] as? [String: Any], let x = d["x"] as? Double, let y = d["y"] as? Double { a = CGPoint(x: x, y: y) }
+            if let a = a, let alvo = esperarAlvo(p, pid: pid, ms: 6000), let b = alvo.ponto { arrastarDe(a, para: b) } else { falhou = "não achei de onde ou para onde arrastar" }
+        case "digitar":
+            let texto = p["valor"] as? String ?? ""
+            if (p["senha"] as? Bool) == true { falhou = "senha: eu não digito; digite você e continue" }
+            else {
+                if let alvo = esperarAlvo(p, pid: pid, ms: 6000) {
+                    var feito = false
+                    if let el = alvo.el, ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(axTexto(el, kAXRoleAttribute)) {
+                        if let pt = alvo.ponto { clicarEm(pt) }; dormir(120)
+                        if AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, texto as CFTypeRef) == .success, norm(axTexto(el, kAXValueAttribute)) == norm(texto) { feito = true }
+                    }
+                    if !feito { if let pt = alvo.ponto { clicarEm(pt); dormir(120) }; digitarTexto(texto) }
+                } else {
+                    // Sem alvo: digita onde está o foco (o passo anterior já o colocou).
+                    digitarTexto(texto)
+                }
+            }
+        case "tecla":
+            if !teclaPorNome(p["tecla"] as? String ?? "") { falhou = "tecla desconhecida" }
+        case "atalho":
+            if !atalhoPorNome(p["tecla"] as? String ?? "") { falhou = "atalho desconhecido" }
+        case "rolar":
+            let pt = esperarAlvo(p, pid: pid, ms: 1500)?.ponto ?? pontoRelativo(p, pid: pid) ?? CGPoint(x: 600, y: 400)
+            rolarEm(pt, direcao: p["direcao"] as? String ?? "baixo", quanto: p["quanto"] as? Int ?? 300)
+        default:
+            break
+        }
+        if let f = falhou {
+            var out: [String: Any] = ["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": f, "app": app.nome]
+            if let j = janelaFocada(pid) { out["janela"] = j.titulo }
+            if let foto = fotoDaJanela(pid) { out["foto"] = foto }
+            linha(out); return
+        }
+        linha(["t": "passo", "n": n, "de": total, "texto": frase, "estado": "ok"])
+        // Espera a tela assentar antes do próximo.
+        dormir(tipo == "app" ? 300 : 450)
+    }
+    var fim: [String: Any] = ["t": "concluido", "ms": Int(agoraMs() - inicio), "de": total]
+    if let a = appDaFrente() { fim["app"] = a.nome; if let j = janelaFocada(a.pid) { fim["janela"] = j.titulo }; if let foto = fotoDaJanela(a.pid) { fim["foto"] = foto } }
+    linha(fim)
+}
+
+var ultimoEscMs: UInt64 = 0
+func modoExecutar(caminho: String, ignorar: String) {
+    guard let dados = FileManager.default.contents(atPath: caminho), let obj = try? JSONSerialization.jsonObject(with: dados), let roteiro = obj as? [String: Any] else {
+        linha(["t": "erro", "motivo": "não li o roteiro em \(caminho)"]); exit(1)
+    }
+    if !acessibilidadeOk(pedir: false) { linha(["t": "erro", "motivo": "sem permissão de Acessibilidade: o dn.os não consegue clicar nem digitar"]); exit(2) }
+    // Esc duas vezes (600 ms) para parar, de qualquer lugar. Tap só de escuta.
+    let mascara: CGEventMask = (1 << CGEventType.keyDown.rawValue)
+    let callback: CGEventTapCallBack = { _, tipo, ev, _ in
+        if tipo == .keyDown, ev.getIntegerValueField(.keyboardEventKeycode) == 53 {
+            let agora = agoraMs()
+            if agora - ultimoEscMs < 600 { execucao.mandarParar() }
+            ultimoEscMs = agora
+        }
+        return Unmanaged.passUnretained(ev)
+    }
+    if let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mascara, callback: callback, userInfo: nil) {
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0), .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+    DispatchQueue.global().async {
+        while let l = readLine() { if l.trimmingCharacters(in: .whitespacesAndNewlines) == "parar" { execucao.mandarParar() } }
+        execucao.mandarParar()
+    }
+    signal(SIGTERM) { _ in execucao.mandarParar() }
+    linha(["t": "pronto", "hora": agoraMs(), "passos": (roteiro["passos"] as? [Any])?.count ?? 0])
+    DispatchQueue.global(qos: .userInitiated).async {
+        executarRoteiro(roteiro, ignorar: ignorar)
+        exit(0)
+    }
+    CFRunLoopRun()
+}
+
 // ───────────────────────── main ─────────────────────────
 
 let args = CommandLine.arguments.dropFirst()
@@ -485,6 +817,12 @@ if modo == "gravar" {
     if let i = args.firstIndex(of: "--ignorar"), let b = args.dropFirst(i - args.startIndex + 1).first { gravador.ignorar = b }
     gravador.comFoto = !args.contains("--sem-foto")
     gravar()
+}
+if modo == "executar" {
+    var caminho = "", ignorar = ""
+    if let i = args.firstIndex(of: "--roteiro"), let c = args.dropFirst(i - args.startIndex + 1).first { caminho = c }
+    if let i = args.firstIndex(of: "--ignorar"), let b = args.dropFirst(i - args.startIndex + 1).first { ignorar = b }
+    modoExecutar(caminho: caminho, ignorar: ignorar)
 }
 linha(["t": "erro", "motivo": "modo desconhecido: \(modo)"])
 exit(1)

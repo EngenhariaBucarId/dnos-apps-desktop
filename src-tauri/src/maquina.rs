@@ -10,6 +10,10 @@
 //! Eventos da página:
 //!   `dnos://gravador/iniciar {nome?, modo:"mac"}` — cai aqui (gravador.rs despacha).
 //!   `dnos://maquina/permissoes {pedir?}` → `dnos://maquina/permissoes-estado {acessibilidade, tela, ajudante, casca, versao}`.
+//!   `dnos://roteiro/executar {modo:"mac", nome, criterio, passos}` (roteiro.rs despacha para cá):
+//!     o ajudante executa os passos no Mac (fase 2); progresso em `dnos://roteiro`
+//!     `{estado: rodando|parou|concluido|erro, modo:"mac", passo, total, texto, motivo, tela:{app, janela}}`
+//!     e numa barra flutuante ("barra-mac") com Parar; `dnos://roteiro/parar` para.
 //! Nota, parar, estado, listar, abrir, apagar: os mesmos do gravador do Chrome —
 //! a gravação sai no mesmo JSON, com `modo: "mac"`, para a mesma revisão.
 //!
@@ -22,6 +26,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use tokio::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use crate::gravador::{self, Ativa, Compartilhado};
 use crate::meu_chrome;
@@ -92,7 +97,105 @@ fn permissoes(app: &AppHandle, pedir: bool) -> Value {
     }
 }
 
+/// Estado da execução em curso: o stdin do ajudante (para "parar") e se está rodando.
+#[derive(Default)]
+pub struct ExecucaoMac { pub entrada: Option<std::process::ChildStdin>, pub rodando: bool }
+pub type ExecucaoCompartilhada = Arc<Mutex<ExecucaoMac>>;
+
+/// Parar vindo da página ou da barra flutuante.
+pub fn parar(app: &AppHandle) {
+    if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
+        if let Ok(mut g) = e.lock() {
+            if let Some(entrada) = g.entrada.as_mut() { let _ = entrada.write_all(b"parar\n"); let _ = entrada.flush(); }
+        }
+    }
+}
+
+fn emitir_roteiro(app: &AppHandle, v: Value) {
+    meu_chrome::registrar(app, &format!("roteiro-mac: {}", v.to_string().chars().take(220).collect::<String>()));
+    let _ = app.emit("dnos://roteiro", v);
+}
+
+/// Barra flutuante por cima de tudo: "<agente> está usando o CapCut · passo 3 de 9" + Parar.
+fn mostrar_barra(app: &AppHandle) {
+    if app.get_webview_window("barra-mac").is_some() { return; }
+    let _ = tauri::WebviewWindowBuilder::new(app, "barra-mac", tauri::WebviewUrl::App("barra-mac.html".into()))
+        .title("dn.os")
+        .inner_size(420.0, 56.0)
+        .position(0.0, 0.0)
+        .decorations(false)
+        .always_on_top(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .focused(false)
+        .build();
+    if let Some(w) = app.get_webview_window("barra-mac") {
+        // Topo, centralizada no monitor principal.
+        if let Ok(Some(m)) = w.primary_monitor() {
+            let largura = m.size().width as f64 / m.scale_factor();
+            let _ = w.set_position(tauri::LogicalPosition::new(((largura - 420.0) / 2.0).max(0.0), 8.0));
+        }
+    }
+}
+fn esconder_barra(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("barra-mac") { let _ = w.close(); }
+}
+
+pub async fn executar(app: AppHandle, pedido: Value) {
+    let estado = match app.try_state::<ExecucaoCompartilhada>() { Some(e) => e.inner().clone(), None => return };
+    if estado.lock().map(|g| g.rodando).unwrap_or(false) { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": "já há um roteiro rodando" })); }
+    let arq = match caminho_do_ajudante(&app) { Ok(a) => a, Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e })) };
+    let nome = pedido["nome"].as_str().unwrap_or("habilidade").to_string();
+    let criterio = pedido["criterio"].as_str().unwrap_or("").to_string();
+    let agente = pedido["agente"].as_str().unwrap_or("").to_string();
+    let passos: Vec<Value> = pedido["passos"].as_array().cloned().unwrap_or_default();
+    if passos.is_empty() { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": "roteiro sem passos executáveis" })); }
+    let total = passos.len();
+    // O roteiro vai por arquivo: passos com fotos podem ser grandes demais para argumento.
+    let pasta = match app.path().app_data_dir() { Ok(p) => p.join("roteiros"), Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e.to_string() })) };
+    let _ = std::fs::create_dir_all(&pasta);
+    let arq_roteiro = pasta.join(format!("{}.json", gravador::agora_ms()));
+    if let Err(e) = std::fs::write(&arq_roteiro, json!({ "nome": nome, "passos": passos }).to_string()) { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e.to_string() })); }
+    let identificador = app.config().identifier.clone();
+    let mut filho = match Command::new(&arq).arg("executar").arg("--roteiro").arg(&arq_roteiro).arg("--ignorar").arg(&identificador)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(f) => f,
+        Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": format!("não abri o executor da máquina: {e}") })),
+    };
+    if let Ok(mut g) = estado.lock() { g.entrada = filho.stdin.take(); g.rodando = true; }
+    let saida = filho.stdout.take();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+    if let Some(s) = saida {
+        std::thread::spawn(move || { for l in BufReader::new(s).lines().map_while(Result::ok) { if let Ok(v) = serde_json::from_str::<Value>(&l) { if tx.send(v).is_err() { break; } } } });
+    }
+    mostrar_barra(&app);
+    let _ = app.emit("dnos://barra-mac", json!({ "agente": agente, "titulo": nome, "sub": format!("preparando · {total} passos") }));
+    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "passo": 0, "total": total, "texto": "preparando" }));
+    let mut fim = json!({ "estado": "erro", "modo": "mac", "motivo": "o executor da máquina fechou sem terminar" });
+    while let Some(v) = rx.recv().await {
+        match v["t"].as_str().unwrap_or("") {
+            "passo" => {
+                if v["estado"].as_str() == Some("rodando") {
+                    let texto = v["texto"].as_str().unwrap_or("").to_string();
+                    let _ = app.emit("dnos://barra-mac", json!({ "agente": agente, "titulo": nome, "sub": format!("passo {} de {} · {}", v["n"], total, texto) }));
+                    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "passo": v["n"], "total": total, "texto": texto }));
+                }
+            }
+            "parou" => { fim = json!({ "estado": "parou", "modo": "mac", "passo": v["passo"], "total": total, "texto": v["texto"], "motivo": v["motivo"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
+            "concluido" => { fim = json!({ "estado": "concluido", "modo": "mac", "total": total, "ms": v["ms"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
+            "erro" => { fim = json!({ "estado": "erro", "modo": "mac", "motivo": v["motivo"] }); break; }
+            _ => {}
+        }
+    }
+    let _ = filho.kill(); let _ = filho.wait();
+    let _ = std::fs::remove_file(&arq_roteiro);
+    if let Ok(mut g) = estado.lock() { g.entrada = None; g.rodando = false; }
+    esconder_barra(&app);
+    emitir_roteiro(&app, fim);
+}
+
 pub fn instalar(app: &AppHandle) {
+    app.manage::<ExecucaoCompartilhada>(Arc::new(Mutex::new(ExecucaoMac::default())));
     let h = app.clone();
     app.listen_any("dnos://maquina/permissoes", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
