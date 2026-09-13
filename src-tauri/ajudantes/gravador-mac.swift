@@ -853,12 +853,12 @@ if modo == "permissoes" {
     // juntos — pedir os dois de uma vez deixava o segundo sem pergunta (13/09).
     var ax = acessibilidadeOk(pedir: false)
     var tela = telaOk(pedir: false)
-    var mic = microfoneOk(pedir: false)
+    let mic = microfoneOk(pedir: false)
     if pedir {
+        // Microfone NÃO se pede daqui (13/09): o macOS julga este binário pela
+        // identidade dele e nega sem perguntar; a casca pede pelo próprio app.
         if !ax {
             ax = acessibilidadeOk(pedir: true)
-        } else if tela && !mic {
-            mic = microfoneOk(pedir: true)
         } else if !tela {
             tela = telaOk(pedir: true)
             if !tela {

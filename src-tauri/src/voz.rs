@@ -41,6 +41,22 @@ pub fn ligar(app: &AppHandle) {
     });
 }
 
+/// Abre o microfone padrão por um instante e fecha. Serve só para o macOS
+/// mostrar a pergunta de permissão quando ela ainda não foi feita (13/09).
+pub fn cutucar_microfone() {
+    fn ignorar(_: cpal::StreamError) {}
+    let host = cpal::default_host();
+    let Some(dev) = host.default_input_device() else { return };
+    let Ok(conf) = dev.default_input_config() else { return };
+    let stream = match conf.sample_format() {
+        cpal::SampleFormat::F32 => dev.build_input_stream(&conf.into(), move |_d: &[f32], _| {}, ignorar, None),
+        cpal::SampleFormat::I16 => dev.build_input_stream(&conf.into(), move |_d: &[i16], _| {}, ignorar, None),
+        cpal::SampleFormat::U16 => dev.build_input_stream(&conf.into(), move |_d: &[u16], _| {}, ignorar, None),
+        _ => return,
+    };
+    if let Ok(s) = stream { let _ = s.play(); std::thread::sleep(std::time::Duration::from_millis(1500)); drop(s); }
+}
+
 pub fn desligar(app: &AppHandle) {
     use tauri::Manager;
     if let Some(estado) = app.try_state::<Compartilhado>() {

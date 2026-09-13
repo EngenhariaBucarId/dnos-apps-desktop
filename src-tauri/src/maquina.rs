@@ -74,27 +74,94 @@ fn caminho_do_ajudante(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(arq)
 }
 
-/// `permissoes [--pedir]` → {acessibilidade, tela}. Com `pedir`, o macOS abre os diálogos.
+/// Microfone (13/09, 0.7.6): o ajudante é um binário solto e o macOS julga o
+/// microfone pela identidade DELE (sem texto de uso → negado na hora, sem
+/// pergunta). Estado e pedido têm que sair do próprio app: o estado pela
+/// AVFoundation, o pedido abrindo o microfone por um instante (o CoreAudio
+/// mostra o diálogo do sistema quando ainda não foi perguntado).
+#[cfg(target_os = "macos")]
+mod microfone {
+    use std::ffi::c_void;
+    #[link(name = "objc", kind = "dylib")]
+    extern "C" {
+        fn objc_getClass(nome: *const std::os::raw::c_char) -> *mut c_void;
+        fn sel_registerName(nome: *const std::os::raw::c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    #[link(name = "AVFoundation", kind = "framework")]
+    extern "C" { static AVMediaTypeAudio: *mut c_void; }
+    /// 0 ainda não perguntado · 1 restrito · 2 negado · 3 autorizado · -1 sem AVFoundation
+    pub fn estado() -> i64 {
+        unsafe {
+            let cls = objc_getClass(b"AVCaptureDevice\0".as_ptr() as *const _);
+            if cls.is_null() { return -1; }
+            let sel = sel_registerName(b"authorizationStatusForMediaType:\0".as_ptr() as *const _);
+            let f: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i64 = std::mem::transmute(objc_msgSend as *const c_void);
+            f(cls, sel, AVMediaTypeAudio)
+        }
+    }
+    pub fn autorizado() -> bool { estado() == 3 }
+    /// Pede: abre o microfone por um instante (dispara a pergunta do sistema) e
+    /// espera a resposta até 2 min; já negado → abre o painel dos Ajustes.
+    pub fn pedir() -> bool {
+        match estado() {
+            3 => true,
+            0 => {
+                crate::voz::cutucar_microfone();
+                let fim = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                while std::time::Instant::now() < fim {
+                    let e = estado();
+                    if e != 0 { return e == 3; }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                false
+            }
+            _ => {
+                let _ = std::process::Command::new("/usr/bin/open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone").status();
+                false
+            }
+        }
+    }
+}
+#[cfg(not(target_os = "macos"))]
+mod microfone {
+    pub fn autorizado() -> bool { false }
+    pub fn pedir() -> bool { false }
+}
+
+/// `permissoes [--pedir]` → {acessibilidade, tela, microfone}. Com `pedir`, uma por vez:
+/// Acessibilidade e Tela pelo ajudante; Microfone pelo próprio app (ver `microfone`).
 fn permissoes(app: &AppHandle, pedir: bool) -> Value {
     let arq = match caminho_do_ajudante(app) {
         Ok(a) => a,
         Err(e) => return json!({ "ajudante": false, "acessibilidade": false, "tela": false, "motivo": e }),
     };
-    let mut cmd = Command::new(&arq);
-    cmd.arg("permissoes");
-    if pedir { cmd.arg("--pedir"); }
-    match cmd.output() {
-        Ok(saida) => {
-            let txt = String::from_utf8_lossy(&saida.stdout);
-            let mut v: Value = txt.lines().rev().find_map(|l| serde_json::from_str::<Value>(l).ok()).unwrap_or(json!({}));
-            v["ajudante"] = json!(true);
-            v["casca"] = json!(casca_confiavel());
-            v["versao"] = json!(app.package_info().version.to_string());
-            if !saida.status.success() { v["motivo"] = json!(format!("ajudante saiu com {}", saida.status)); }
-            v
+    let rodar = |pedir: bool| -> Value {
+        let mut cmd = Command::new(&arq);
+        cmd.arg("permissoes");
+        if pedir { cmd.arg("--pedir"); }
+        match cmd.output() {
+            Ok(saida) => {
+                let txt = String::from_utf8_lossy(&saida.stdout);
+                let mut v: Value = txt.lines().rev().find_map(|l| serde_json::from_str::<Value>(l).ok()).unwrap_or(json!({}));
+                v["ajudante"] = json!(true);
+                if !saida.status.success() { v["motivo"] = json!(format!("ajudante saiu com {}", saida.status)); }
+                v
+            }
+            Err(e) => json!({ "ajudante": false, "acessibilidade": false, "tela": false, "motivo": format!("não rodei o ajudante: {e}") }),
         }
-        Err(e) => json!({ "ajudante": false, "acessibilidade": false, "tela": false, "motivo": format!("não rodei o ajudante: {e}") }),
+    };
+    let mut v = rodar(false);
+    if pedir {
+        let ax = v["acessibilidade"].as_bool().unwrap_or(false);
+        let tela = v["tela"].as_bool().unwrap_or(false);
+        if !ax || !tela { v = rodar(true); }
+        else if !microfone::autorizado() { let ok = microfone::pedir(); meu_chrome::registrar(app, &format!("maquina: microfone pedido pelo app → {}", if ok { "autorizado" } else { "não" })); }
     }
+    v["microfone"] = json!(microfone::autorizado());
+    v["casca"] = json!(casca_confiavel());
+    v["versao"] = json!(app.package_info().version.to_string());
+    v
 }
 
 /// Estado da execução em curso: o stdin do ajudante (para "parar") e se está rodando.
