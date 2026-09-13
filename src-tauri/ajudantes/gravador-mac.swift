@@ -461,8 +461,23 @@ let args = CommandLine.arguments.dropFirst()
 let modo = args.first ?? "permissoes"
 if modo == "permissoes" {
     let pedir = args.contains("--pedir")
-    let ax = acessibilidadeOk(pedir: pedir)
-    let tela = telaOk(pedir: pedir)
+    // Com --pedir, uma permissão por vez, na ordem: Acessibilidade primeiro (é a
+    // obrigatória), depois Gravação de Tela. O macOS não mostra os dois diálogos
+    // juntos — pedir os dois de uma vez deixava o segundo sem pergunta (13/09).
+    var ax = acessibilidadeOk(pedir: false)
+    var tela = telaOk(pedir: false)
+    if pedir {
+        if !ax {
+            ax = acessibilidadeOk(pedir: true)
+        } else if !tela {
+            tela = telaOk(pedir: true)
+            if !tela {
+                // Sequoia às vezes só registra o app na lista quando ele tenta capturar de fato.
+                _ = CGWindowListCreateImage(CGRect(x: 0, y: 0, width: 1, height: 1), .optionOnScreenOnly, kCGNullWindowID, [])
+                if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(u) }
+            }
+        }
+    }
     linha(["acessibilidade": ax, "tela": tela])
     exit(0)
 }
