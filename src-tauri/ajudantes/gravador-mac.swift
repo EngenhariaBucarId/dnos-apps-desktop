@@ -484,18 +484,44 @@ func norm(_ s: String?) -> String {
     return (s ?? "").replacingOccurrences(of: "\u{2026}", with: "").replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
+/// Processos do sistema que aparecem como "app da frente" na gravação mas não
+/// se abrem como app: o passo anterior (atalho ⌘Espaço, clique no Dock) já os
+/// chamou. Na execução só se espera por eles, sem falhar (13/09).
+let BUNDLES_DO_SISTEMA: Set<String> = ["com.apple.Spotlight", "com.apple.dock", "com.apple.controlcenter", "com.apple.notificationcenterui", "com.apple.loginwindow", "com.apple.systemuiserver"]
+
 /// Ativa (ou abre) o app pelo bundle id e espera ficar na frente.
+/// Abertura fria pode levar bem mais que 10 s (13/09): espera até 30 s.
 func ativarApp(bundle: String, nome: String) -> Bool {
     if bundle.isEmpty { return false }
+    if BUNDLES_DO_SISTEMA.contains(bundle) {
+        for _ in 0..<16 { if let f = appDaFrente(), f.bundle == bundle { dormir(200); return true }; dormir(250) }
+        return true
+    }
     if let a = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first {
         a.activate(options: [.activateIgnoringOtherApps])
     } else {
         if !NSWorkspace.shared.launchApplication(withBundleIdentifier: bundle, options: [], additionalEventParamDescriptor: nil, launchIdentifier: nil) { return false }
     }
-    for _ in 0..<40 {
+    for _ in 0..<120 {
         if let f = appDaFrente(), f.bundle == bundle { dormir(250); return true }
         dormir(250)
     }
+    return false
+}
+
+/// Clique num item do Dock (gravado com o app anterior na frente): o elemento é
+/// do Dock, não do app. Acha pelo AX do Dock e aperta (13/09).
+func clicarNoDock(_ ax: [String: Any]) -> Bool {
+    guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return false }
+    let pid = dock.processIdentifier
+    let fim = Date().addingTimeInterval(4)
+    repeat {
+        if let (el, _) = acharElemento(alvo: ax, pid: pid) {
+            if AXUIElementPerformAction(el, kAXPressAction as CFString) == .success { return true }
+            if let c = centro(el) { clicarEm(c); return true }
+        }
+        dormir(250)
+    } while Date() < fim
     return false
 }
 
@@ -699,7 +725,9 @@ func executarRoteiro(_ roteiro: [String: Any], ignorar: String) {
         case "app":
             break
         case "clique", "duplo":
-            if let alvo = esperarAlvo(p, pid: pid, ms: 8000) {
+            if tipo == "clique", let ax = p["ax"] as? [String: Any], (ax["papel"] as? String) == "AXDockItem" {
+                if !clicarNoDock(ax) { falhou = "não achei \"\(ax["titulo"] as? String ?? "o item")\" no Dock" }
+            } else if let alvo = esperarAlvo(p, pid: pid, ms: 8000) {
                 let direito = (p["botao"] as? String) == "direito"
                 if tipo == "clique" && !direito, let el = alvo.el, ["AXButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXLink", "AXDisclosureTriangle"].contains(axTexto(el, kAXRoleAttribute)), AXUIElementPerformAction(el, kAXPressAction as CFString) == .success {
                     // AXPress: o app executa a ação do controle sem depender da posição.
