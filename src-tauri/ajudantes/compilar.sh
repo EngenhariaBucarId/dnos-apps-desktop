@@ -9,4 +9,6 @@ swiftc -O -target x86_64-apple-macos11 -sdk "$SDK" -o dnos-gravador-mac-x86_64 g
 lipo -create -output dnos-gravador-mac dnos-gravador-mac-arm64 dnos-gravador-mac-x86_64
 rm -f dnos-gravador-mac-arm64 dnos-gravador-mac-x86_64
 chmod +x dnos-gravador-mac
+# Identificador estável para o TCC (o linker deixava "dnos-gravador-mac-arm64").
+codesign --force --sign - --identifier ai.dnia.dnos.gravador-mac dnos-gravador-mac
 ls -la dnos-gravador-mac

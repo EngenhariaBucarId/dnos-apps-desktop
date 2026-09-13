@@ -35,6 +35,18 @@ pub fn disponivel() -> bool {
     cfg!(target_os = "macos") && !AJUDANTE.is_empty()
 }
 
+/// A casca em si é confiável para a Acessibilidade? (o ajudante herda da casca,
+/// que é o "processo responsável"; quando os dois discordam, o macOS está com
+/// um registro velho da casca — cada build sem assinatura é um app novo).
+#[cfg(target_os = "macos")]
+fn casca_confiavel() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" { fn AXIsProcessTrusted() -> bool; }
+    unsafe { AXIsProcessTrusted() }
+}
+#[cfg(not(target_os = "macos"))]
+fn casca_confiavel() -> bool { false }
+
 /// Escreve o ajudante em disco (uma vez por versão da casca) e devolve o caminho.
 fn caminho_do_ajudante(app: &AppHandle) -> Result<PathBuf, String> {
     if !disponivel() {
@@ -71,6 +83,8 @@ fn permissoes(app: &AppHandle, pedir: bool) -> Value {
             let txt = String::from_utf8_lossy(&saida.stdout);
             let mut v: Value = txt.lines().rev().find_map(|l| serde_json::from_str::<Value>(l).ok()).unwrap_or(json!({}));
             v["ajudante"] = json!(true);
+            v["casca"] = json!(casca_confiavel());
+            v["versao"] = json!(app.package_info().version.to_string());
             if !saida.status.success() { v["motivo"] = json!(format!("ajudante saiu com {}", saida.status)); }
             v
         }
