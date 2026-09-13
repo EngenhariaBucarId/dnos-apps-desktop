@@ -1,9 +1,9 @@
 # Gera os instaladores do dn.os Desktop a cada tag `v*` e publica no GitHub
 # Releases, com o `latest.json` que o updater das cascas instaladas consulta.
 #
-# Assinatura de código (Apple Developer ID / Windows) entra depois, por
-# secrets — sem eles o build sai sem assinatura e o sistema mostra o aviso
-# na primeira abertura (ver README).
+# Mac: assinado com certificado próprio (auto-assinado, estável entre versões)
+# — ver o passo "Certificado de assinatura do Mac". Apple Developer ID entra
+# depois; Windows segue sem assinatura (aviso na primeira abertura, ver README).
 name: release
 
 on:
@@ -60,6 +60,37 @@ jobs:
 
       - run: npm ci
 
+      # Assinatura do Mac com certificado PRÓPRIO (13/09): auto-assinado, o mesmo
+      # em toda versão. O macOS guarda Acessibilidade, Tela e Microfone pela
+      # impressão digital do assinante; com "ad hoc" cada versão era um app novo
+      # e a pessoa religava tudo a cada atualização. O Gatekeeper continua
+      # pedindo "abrir com botão direito" na primeira instalação (não é Apple).
+      # Chave: secrets DNOS_MAC_CERT_P12 (base64) e DNOS_MAC_CERT_SENHA; o
+      # certificado público fica em src-tauri/assinatura/dn-os-desktop.pem.
+      - name: Certificado de assinatura do Mac
+        if: startsWith(matrix.platform, 'macos')
+        env:
+          CERT_P12_B64: ${{ secrets.DNOS_MAC_CERT_P12 }}
+          CERT_SENHA: ${{ secrets.DNOS_MAC_CERT_SENHA }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/dnos.keychain-db"
+          KCPW="$(openssl rand -hex 16)"
+          echo "$CERT_P12_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_SENHA" -T /usr/bin/codesign -T /usr/bin/security
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain src-tauri/assinatura/dn-os-desktop.pem
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KC"
+          # Prova antes do build: assina um binário pequeno e mostra o requisito designado.
+          cp /usr/bin/true "$RUNNER_TEMP/prova"
+          codesign --force --sign "dn.os Desktop" "$RUNNER_TEMP/prova"
+          codesign -dr - "$RUNNER_TEMP/prova"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,12 +98,10 @@ jobs:
           # assinada com esta chave. Gerada com `tauri signer generate`.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Assinatura de código da Apple: NÃO declarar estas variáveis enquanto
-          # não houver conta. Vazias, a action tenta importar um certificado
-          # vazio e o build do Mac falha ("failed to import keychain certificate").
-          # Quando a conta existir, acrescentar aqui:
-          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-          #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID (todos via secrets).
+          # Identidade do certificado próprio (passo acima). Com Apple Developer,
+          # trocar por APPLE_CERTIFICATE/APPLE_CERTIFICATE_PASSWORD/APPLE_SIGNING_IDENTITY
+          # + APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID (notarização) e tirar o passo.
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && 'dn.os Desktop' || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "dn.os Desktop ${{ github.ref_name }}"

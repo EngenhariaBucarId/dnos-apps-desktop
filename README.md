@@ -18,6 +18,12 @@ Silicon) ou `dn.os_x.y.z_x64-setup.exe` (Windows).
 - **Mac:** o sistema diz "não pode ser aberto porque o desenvolvedor não pode
   ser verificado". Abra **Ajustes → Privacidade e Segurança**, role até o
   aviso do dn.os e clique **Abrir Mesmo Assim**. Só na primeira vez.
+  Desde a 0.7.7 o app é assinado com um certificado próprio (auto-assinado,
+  `src-tauri/assinatura/dn-os-desktop.pem`), o mesmo em toda versão: as
+  permissões de Acessibilidade, Gravação de Tela e Microfone ficam guardadas
+  entre atualizações. A chave privada (`.p12`) vive só nos secrets do GitHub
+  (`DNOS_MAC_CERT_P12`, `DNOS_MAC_CERT_SENHA`); se ela se perder, gera-se outra
+  e as pessoas religam as permissões uma vez.
 - **Windows:** o SmartScreen mostra "o Windows protegeu o computador".
   Clique **Mais informações → Executar assim mesmo**. Só na primeira vez.
 
