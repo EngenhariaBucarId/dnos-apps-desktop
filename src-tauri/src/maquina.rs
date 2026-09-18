@@ -161,8 +161,44 @@ fn permissoes(app: &AppHandle, pedir: bool) -> Value {
 
 /// Estado da execução em curso: o stdin do ajudante (para "parar") e se está rodando.
 #[derive(Default)]
-pub struct ExecucaoMac { pub entrada: Option<std::process::ChildStdin>, pub rodando: bool }
+pub struct ExecucaoMac {
+    pub entrada: Option<std::process::ChildStdin>,
+    pub rodando: bool,
+    /// Último estado da barra do computador. A webview pede este valor quando
+    /// termina de carregar, porque o primeiro emit pode acontecer antes de ela
+    /// instalar o listener.
+    pub barra_atual: Option<Value>,
+}
 pub type ExecucaoCompartilhada = Arc<Mutex<ExecucaoMac>>;
+
+/// Gravação e execução usam o mesmo mouse, teclado e barra. Uma reserva única
+/// impede que as duas operações disputem o computador. O guard libera também
+/// nos retornos antecipados e erros.
+#[derive(Default)]
+pub struct UsoComputador { modo: Option<&'static str> }
+pub type UsoCompartilhado = Arc<Mutex<UsoComputador>>;
+
+pub struct ReservaDeUso { estado: UsoCompartilhado, modo: &'static str }
+impl Drop for ReservaDeUso {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.estado.lock() {
+            if g.modo == Some(self.modo) { g.modo = None; }
+        }
+    }
+}
+
+pub fn reservar_uso(app: &AppHandle, modo: &'static str) -> Result<ReservaDeUso, String> {
+    let estado = app.try_state::<UsoCompartilhado>().ok_or_else(|| "controle do computador indisponível".to_string())?.inner().clone();
+    {
+        let mut g = estado.lock().map_err(|_| "controle do computador indisponível".to_string())?;
+        if let Some(atual) = g.modo {
+            let fazendo = if atual == "gravando" { "uma gravação" } else { "uma execução" };
+            return Err(format!("o computador já está ocupado com {fazendo}"));
+        }
+        g.modo = Some(modo);
+    }
+    Ok(ReservaDeUso { estado, modo })
+}
 
 /// Parar vindo da página ou da barra flutuante.
 pub fn parar(app: &AppHandle) {
@@ -183,9 +219,13 @@ fn emitir_roteiro(app: &AppHandle, v: Value) {
 /// A foto sai da mesma fonte da barra do Chrome.
 fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: &str, sub: String, ouvindo: bool) {
     let foto = if agente.is_empty() { None } else { crate::barra::foto_do_agente(app, agente) };
-    let _ = app.emit("dnos://barra-mac", json!({
+    let estado = json!({
         "modo": modo, "agente": agente, "titulo": titulo, "sub": sub, "ouvindo": ouvindo, "foto": foto,
-    }));
+    });
+    if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
+        if let Ok(mut g) = e.lock() { g.barra_atual = Some(estado.clone()); }
+    }
+    let _ = app.emit("dnos://barra-mac", estado);
 }
 
 /// Barra flutuante por cima de tudo: "<agente> está usando o seu computador · passo 3 de 9" + Parar.
@@ -210,10 +250,17 @@ fn mostrar_barra(app: &AppHandle) {
     }
 }
 fn esconder_barra(app: &AppHandle) {
+    if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
+        if let Ok(mut g) = e.lock() { g.barra_atual = None; }
+    }
     if let Some(w) = app.get_webview_window("barra-mac") { let _ = w.close(); }
 }
 
 pub async fn executar(app: AppHandle, pedido: Value) {
+    let _reserva = match reservar_uso(&app, "executando") {
+        Ok(r) => r,
+        Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e })),
+    };
     let estado = match app.try_state::<ExecucaoCompartilhada>() { Some(e) => e.inner().clone(), None => return };
     if estado.lock().map(|g| g.rodando).unwrap_or(false) { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": "já há um roteiro rodando" })); }
     let arq = match caminho_do_ajudante(&app) { Ok(a) => a, Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e })) };
@@ -336,7 +383,17 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
 
 pub fn instalar(app: &AppHandle) {
     app.manage::<ExecucaoCompartilhada>(Arc::new(Mutex::new(ExecucaoMac::default())));
+    app.manage::<UsoCompartilhado>(Arc::new(Mutex::new(UsoComputador::default())));
     app.manage::<NoMacCompartilhado>(Arc::new(Mutex::new(NoMac::default())));
+    // A janela pode perder o primeiro estado se o emit ocorrer durante a sua
+    // criação. Quando o JavaScript avisa que está pronto, devolvemos o estado
+    // guardado. Assim o botão Parar sempre chama a operação correta.
+    let h = app.clone();
+    app.listen_any("dnos://barra-mac/pronta", move |_| {
+        let atual = h.try_state::<ExecucaoCompartilhada>()
+            .and_then(|e| e.lock().ok().and_then(|g| g.barra_atual.clone()));
+        if let Some(v) = atual { let _ = h.emit("dnos://barra-mac", v); }
+    });
     let h = app.clone();
     app.listen_any("dnos://maquina/no", move |evento| {
         if !disponivel() { return; }
@@ -376,6 +433,10 @@ pub fn instalar(app: &AppHandle) {
 /// ativa (notas e parar chegam por ela), o JSON final vai para a mesma pasta e
 /// sai por `dnos://gravador/pronta`.
 pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente: String) {
+    let _reserva = match reservar_uso(&app, "gravando") {
+        Ok(r) => r,
+        Err(e) => return gravador::emitir(&app, "erro", 0, None, Some(e)),
+    };
     if estado.lock().map(|g| g.ativa.is_some()).unwrap_or(false) {
         return gravador::emitir(&app, "erro", 0, None, Some("já existe uma gravação em andamento".into()));
     }

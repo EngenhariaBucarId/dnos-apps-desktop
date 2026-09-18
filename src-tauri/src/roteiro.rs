@@ -127,6 +127,10 @@ fn descreve(p: &Value) -> String {
 }
 
 async fn executar(app: AppHandle, pedido: Value) {
+    let _reserva = match crate::maquina::reservar_uso(&app, "executando") {
+        Ok(r) => r,
+        Err(e) => return emitir(&app, json!({ "estado": "erro", "motivo": e })),
+    };
     let Some(estado) = app.try_state::<Compartilhado>() else { return };
     if estado.lock().map(|g| g.rodando).unwrap_or(false) { return emitir(&app, json!({ "estado": "erro", "motivo": "já há um roteiro rodando" })); }
     let porta = app.try_state::<meu_chrome::Compartilhado>().and_then(|m| m.lock().ok().and_then(|g| g.porta_ligada()));

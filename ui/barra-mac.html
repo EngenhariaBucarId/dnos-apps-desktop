@@ -113,6 +113,11 @@
     $("parar").title = modo === "atuando" ? "Parar · ou Esc Esc" : "Parar a gravação";
   });
 
+  // A criação da webview e o primeiro estado acontecem em processos
+  // diferentes. Pedir o estado depois de instalar o listener elimina a janela
+  // em que a barra podia parecer "atuando" durante uma gravação.
+  await ev.emit("dnos://barra-mac/pronta", {});
+
   $("parar").onclick = () => {
     if (modo === "assistindo") ev.emit("dnos://gravador/parar-pela-barra", {});
     else ev.emit("dnos://roteiro/parar", {});

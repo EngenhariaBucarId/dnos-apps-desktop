@@ -284,6 +284,10 @@ pub async fn url_do_browser(porta: u16) -> Result<String, String> {
 }
 
 async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
+    let _reserva = match crate::maquina::reservar_uso(&app, "gravando") {
+        Ok(r) => r,
+        Err(e) => return emitir(&app, "erro", 0, None, Some(e)),
+    };
     // Precisa do Meu Chrome ligado: é nele que a pessoa demonstra.
     let porta = app.try_state::<meu_chrome::Compartilhado>().and_then(|m| m.lock().ok().and_then(|g| g.porta_ligada()));
     let Some(porta) = porta else {
