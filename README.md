@@ -106,3 +106,31 @@ Foto e iniciais respeitam o atributo `hidden`. O `display` explícito dos dois
 elementos mantinha ambos no layout, empurrando a foto abaixo da barra e cortando
 o avatar. Conferido visualmente com e sem foto nos modos olhando, assistindo e
 atuando. É uma correção da casca: não exige Publish da web, edge ou migration.
+
+
+### Aprenda comigo integrado · 0.7.16
+
+O destino “No meu computador” do Aprenda comigo passa a transmitir os passos e
+quadros da demonstração para a página assim que são capturados. A página usa a
+função de visão já existente, guarda as interpretações com a gravação e junta
+as imagens às ações e explicações para gerar o rascunho da habilidade. Não
+precisa pedir no chat para o agente assistir. A web retira o item separado
+“Olhar meu computador”.
+
+- Flag `aprendaVisao` (somente macOS); eventos `gravador/passo` e
+  `gravador/visao` correlacionados pelo id da gravação.
+- Quadros nos passos e observação da janela ativa a cada 5 s quando muda;
+  até 80 imagens. Ações e falas continuam após o limite; a revisão informa a
+  cobertura parcial. Observações não são ações do roteiro.
+- Finalizar encerra a captura; interpretações já pedidas podem terminar na
+  revisão. Não há exploração ou edição autônoma nesta entrega.
+- Áudio inclui o id da gravação. O último trecho de fala é enviado ao
+  finalizar; transcrições tardias atualizam apenas a gravação de origem,
+  inclusive se uma nova sessão começou. Não recriam gravações apagadas.
+- Foto/iniciais corrigidas na 0.7.15; botão Finalizar no modo assistindo e
+  indicação do microfone acompanha a detecção real de fala.
+
+Validação: helper universal compilado, dez testes Rust e teste web do fluxo
+completo com ponte simulada (inclui fala tardia). Teste assinado com uma
+nova demonstração real do CapCut precisa ser feito após instalar esta versão
+**e publicar o frontend correspondente**. Nenhuma edge ou migration nova.

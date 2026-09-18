@@ -129,7 +129,7 @@ func descrever(_ el: AXUIElement) -> [String: Any] {
         "id": corta(axTexto(el, kAXIdentifierAttribute), 80),
         "ajuda": corta(axTexto(el, kAXHelpAttribute), 80),
     ]
-    if papel == "AXSecureTextField" {
+    if papel == "AXSecureTextField" || d["subpapel"] as? String == "AXSecureTextField" {
         d["senha"] = true
     } else {
         d["valor"] = corta(axTexto(el, kAXValueAttribute))
@@ -205,6 +205,8 @@ final class Gravador {
     var comFoto = true
     var passos = 0
     var ultimaFotoMs: UInt64 = 0
+    var fotos = 0
+    var ultimoQuadro: String? = nil
     // digitação em curso
     var texto = ""
     var textoInicioMs: UInt64 = 0
@@ -249,11 +251,23 @@ final class Gravador {
         let pid = (p.removeValue(forKey: "pid") as? Int).map { pid_t($0) }
         passos += 1
         p["n"] = passos
-        if comFoto, let pid = pid, agoraMs() - ultimaFotoMs > 1200, passos <= 80 {
+        let protegido = p["senha"] as? Bool == true || (p["ax"] as? [String: Any])?["senha"] as? Bool == true
+        if comFoto, !protegido, let pid = pid, agoraMs() - ultimaFotoMs > 1200, fotos < 80 {
             ultimaFotoMs = agoraMs()
-            if let f = fotoDaJanela(pid) { p["quadro"] = f }
+            if let f = fotoDaJanela(pid) { p["quadro"] = f; ultimoQuadro = f; fotos += 1 }
         }
         linha(p)
+    }
+
+    // Também registra mudanças enquanto a pessoa explica sem clicar. Quadros
+    // idênticos não gastam outra interpretação; o teto é de fotos, não ações.
+    func observar() {
+        guard comFoto, fotos < 80, var c = contexto(nil), let pid = c["pid"] as? Int else { return }
+        if let el = elementoFocado(pid_t(pid)), descrever(el)["senha"] as? Bool == true { return }
+        guard let foto = fotoDaJanela(pid_t(pid)), foto != ultimoQuadro else { return }
+        ultimaFotoMs = agoraMs(); ultimoQuadro = foto; fotos += 1
+        c["t"] = "observar"; c["quadro"] = foto
+        emitir(c)
     }
 
     // ── digitação: junta caracteres até uma pausa, um clique ou Enter ──
@@ -366,6 +380,7 @@ final class Gravador {
     func encerrar() {
         descarregarTexto(); descarregarRolagem()
         if let p = cliquePendente { cliquePendente = nil; emitir(p) }
+        observar()
     }
 }
 
@@ -465,6 +480,11 @@ func gravar() {
 
     linha(["t": "pronto", "hora": agoraMs(), "acessibilidade": acessibilidadeOk(pedir: false), "tela": telaOk(pedir: false)])
 
+    let observacao = DispatchSource.makeTimerSource(queue: gravador.fila)
+    observacao.schedule(deadline: .now() + 1, repeating: 5)
+    observacao.setEventHandler { gravador.observar() }
+    observacao.resume()
+
     // stdin: "parar" encerra; EOF = a casca sumiu.
     DispatchQueue.global().async {
         while let l = readLine() {
@@ -479,7 +499,7 @@ func gravar() {
         linha(["t": "fim", "hora": agoraMs(), "passos": gravador.passos])
         exit(0)
     }
-    CFRunLoopRun()
+    withExtendedLifetime(observacao) { CFRunLoopRun() }
 }
 
 

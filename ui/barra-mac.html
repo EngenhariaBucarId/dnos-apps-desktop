@@ -113,7 +113,8 @@
     $("mic").className = "mic" + (modo === "assistindo" ? " ligado" : "") + (p.ouvindo ? " ouvindo" : "");
     // O atalho só existe na execução; prometer atalho que não funciona é pior
     // que não prometer nada. Fora do corpo da barra: ocupava o espaço do texto.
-    $("parar").title = modo === "atuando" ? "Parar · ou Esc Esc" : modo === "olhando" ? "Parar a observação" : "Parar a gravação";
+    $("parar").textContent = modo === "assistindo" ? "Finalizar" : "Parar";
+    $("parar").title = modo === "atuando" ? "Parar · ou Esc Esc" : modo === "olhando" ? "Parar a observação" : "Finalizar demonstração e revisar";
   });
 
   // A criação da webview e o primeiro estado acontecem em processos

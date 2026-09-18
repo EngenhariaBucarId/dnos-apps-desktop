@@ -85,6 +85,7 @@ pub struct Gravador {
 pub(crate) struct Ativa {
     pub(crate) id: String,
     pub(crate) passos: usize,
+    pub(crate) visao: Vec<Value>,
     pub(crate) notas: mpsc::UnboundedSender<Value>,
     pub(crate) parar: mpsc::UnboundedSender<(Option<String>, Option<String>)>, // (critério, nome)
 }
@@ -139,15 +140,41 @@ pub fn instalar(app: &AppHandle) {
     });
 
     let e = estado.clone();
+    let h = app.clone();
     app.listen_any("dnos://gravador/nota", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
-        if let Some(t) = v["texto"].as_str() {
-            let hora = v["hora"].as_u64().unwrap_or_else(agora_ms); // voz manda a hora em que foi dita
-            if let Ok(g) = e.lock() {
-                if let Some(a) = g.ativa.as_ref() {
-                    let _ = a.notas.send(json!({ "hora": hora, "texto": t, "apos_passo": a.passos, "voz": v["hora"].is_u64() }));
+        let Some(texto) = v["texto"].as_str().filter(|t| !t.trim().is_empty() && t.len() <= 16000) else { return };
+        let hora = v["hora"].as_u64().unwrap_or_else(agora_ms);
+        let Ok(g) = e.lock() else { return };
+        let id = v["id"].as_str();
+        if let Some(a) = g.ativa.as_ref().filter(|a| id.is_none() || id == Some(a.id.as_str())) {
+            let _ = a.notas.send(json!({ "hora": hora, "texto": texto, "apos_passo": a.passos, "voz": v["hora"].is_u64() }));
+        } else if let Some(id) = id.filter(|id| id_valido(id)) {
+            // A fala pode terminar de transcrever depois de Finalizar. Nunca
+            // deve cair na próxima gravação nem recriar uma já apagada.
+            alterar_salva(&h, id, |gravacao| {
+                let nota = json!({ "hora": hora, "texto": texto, "apos_passo": 0, "voz": true });
+                if let Some(notas) = gravacao["notas"].as_array_mut() {
+                    if !notas.iter().any(|n| n["hora"] == nota["hora"] && n["texto"] == nota["texto"]) { notas.push(nota); }
                 }
-            }
+            });
+        }
+    });
+
+    let e = estado.clone();
+    let h = app.clone();
+    app.listen_any("dnos://gravador/visao", move |evento| {
+        let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
+        let Some(id) = v["id"].as_str().filter(|id| id_valido(id)) else { return };
+        let Some(leitura) = leitura_valida(&v["leitura"]) else { return };
+        let Ok(mut g) = e.lock() else { return };
+        if let Some(a) = g.ativa.as_mut().filter(|a| a.id == id) {
+            mesclar_leitura(&mut a.visao, leitura);
+        } else {
+            alterar_salva(&h, id, |gravacao| {
+                if !gravacao["visao"].is_array() { gravacao["visao"] = json!([]); }
+                if let Some(leituras) = gravacao["visao"].as_array_mut() { mesclar_leitura(leituras, leitura); }
+            });
         }
     });
 
@@ -201,7 +228,9 @@ pub fn instalar(app: &AppHandle) {
 
     // Nome e critério podem ser dados depois, na revisão (o Parar da barra não pergunta).
     let h = app.clone();
+    let e = estado.clone();
     app.listen_any("dnos://gravador/atualizar", move |evento| {
+        let Ok(_guarda) = e.lock() else { return };
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
         let id = v["id"].as_str().unwrap_or("").replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "");
         if id.is_empty() { return; }
@@ -219,7 +248,9 @@ pub fn instalar(app: &AppHandle) {
 
     // Apagar uma gravação desta máquina (só o arquivo dela; a lista volta atualizada).
     let h = app.clone();
+    let e = estado.clone();
     app.listen_any("dnos://gravador/apagar", move |evento| {
+        let Ok(_guarda) = e.lock() else { return };
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
         let id = v["id"].as_str().unwrap_or("").replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "");
         if id.is_empty() { return; }
@@ -244,6 +275,75 @@ pub fn instalar(app: &AppHandle) {
             }
         }
     });
+}
+
+fn id_valido(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 80 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn leitura_valida(v: &Value) -> Option<Value> {
+    let passo = v["passo"].as_u64().filter(|n| *n > 0 && *n < 100000)?;
+    let resumo = v["resumo"].as_str().unwrap_or("");
+    let erro = v["erro"].as_str().unwrap_or("");
+    if resumo.len() > 16000 || erro.len() > 2000 || (resumo.is_empty() && erro.is_empty()) { return None; }
+    Some(json!({ "passo": passo, "resumo": resumo, "erro": erro }))
+}
+
+fn mesclar_leitura(leituras: &mut Vec<Value>, leitura: Value) {
+    if let Some(anterior) = leituras.iter_mut().find(|l| l["passo"] == leitura["passo"]) { *anterior = leitura; }
+    else if leituras.len() < 80 { leituras.push(leitura); }
+}
+
+// Chamador segura a trava do gravador durante leitura + escrita. Só informa
+// atualização, nunca reabre a revisão que a pessoa já fechou.
+fn alterar_salva(app: &AppHandle, id: &str, alterar: impl FnOnce(&mut Value)) {
+    let Some(pasta) = pasta(app) else { return };
+    if let Some(gravacao) = editar_gravacao_salva(&pasta, id, alterar) {
+        let _ = app.emit("dnos://gravador/complemento", json!({ "id": id, "notas": gravacao["notas"], "visao": gravacao["visao"] }));
+    }
+}
+
+fn editar_gravacao_salva(pasta: &std::path::Path, id: &str, alterar: impl FnOnce(&mut Value)) -> Option<Value> {
+    if !id_valido(id) { return None; }
+    let arq = pasta.join(format!("{id}.json"));
+    let txt = std::fs::read_to_string(&arq).ok()?;
+    let mut gravacao: Value = serde_json::from_str(&txt).ok()?;
+    if gravacao["id"].as_str() != Some(id) { return None; }
+    alterar(&mut gravacao);
+    std::fs::write(arq, gravacao.to_string()).ok()?;
+    Some(gravacao)
+}
+
+#[cfg(test)]
+mod testes_demonstracao {
+    use super::*;
+    #[test]
+    fn complemento_tardio_so_altera_a_gravacao_de_origem_e_nao_recria_apagada() {
+        let pasta = std::env::temp_dir().join(format!("dnos-complemento-{}-{}", std::process::id(), agora_ms()));
+        std::fs::create_dir_all(&pasta).unwrap();
+        for id in ["primeira", "segunda"] {
+            std::fs::write(pasta.join(format!("{id}.json")), json!({"id":id,"notas":[],"visao":[{"passo":1,"resumo":"Exportar"}]}).to_string()).unwrap();
+        }
+        let alterada = editar_gravacao_salva(&pasta, "primeira", |g| { g["notas"] = json!([{"texto":"fala final"}]); }).unwrap();
+        assert_eq!(alterada["visao"][0]["resumo"], "Exportar");
+        let segunda: Value = serde_json::from_str(&std::fs::read_to_string(pasta.join("segunda.json")).unwrap()).unwrap();
+        assert_eq!(segunda["notas"], json!([]));
+        std::fs::remove_file(pasta.join("primeira.json")).unwrap();
+        assert!(editar_gravacao_salva(&pasta, "primeira", |_| panic!("não recriar")).is_none());
+        assert!(editar_gravacao_salva(&pasta, "../segunda", |_| panic!("id inválido")).is_none());
+        std::fs::remove_dir_all(pasta).unwrap();
+    }
+    #[test]
+    fn leitura_substitui_o_mesmo_passo_sem_duplicar_ou_guardar_imagem() {
+        let mut leituras = Vec::new();
+        let v = leitura_valida(&json!({"passo":1,"resumo":"primeira","quadro":"não guardar"})).unwrap();
+        mesclar_leitura(&mut leituras, v);
+        mesclar_leitura(&mut leituras, leitura_valida(&json!({"passo":1,"resumo":"final"})).unwrap());
+        assert_eq!(leituras.len(), 1);
+        assert_eq!(leituras[0]["resumo"], "final");
+        assert!(leituras[0].get("quadro").is_none());
+        assert!(leitura_valida(&json!({"passo":0,"resumo":"inválida"})).is_none());
+    }
 }
 
 /// GET http://127.0.0.1:<porta>/json/version sem dependência de HTTP: uma
@@ -317,10 +417,10 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
     let (tx_notas, mut rx_notas) = mpsc::unbounded_channel::<Value>();
     let (tx_parar, mut rx_parar) = mpsc::unbounded_channel::<(Option<String>, Option<String>)>();
     if let Ok(mut g) = estado.lock() {
-        g.ativa = Some(Ativa { id: id.clone(), passos: 0, notas: tx_notas, parar: tx_parar });
+        g.ativa = Some(Ativa { id: id.clone(), passos: 0, visao: Vec::new(), notas: tx_notas, parar: tx_parar });
     }
     emitir(&app, "gravando", 0, Some(&id), None);
-    crate::voz::ligar(&app);
+    crate::voz::ligar(&app, &id);
     crate::barra::mostrar(&app, json!({ "modo": "grav", "titulo": "Gravando", "sub": "0 passos · fale para anotar", "parar": true }));
 
     // Saída única para o CDP.
@@ -473,7 +573,11 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
     crate::voz::desligar(&app);
     crate::barra::esconder(&app);
 
+    let Ok(mut guarda) = estado.lock() else { return };
+    while let Ok(nota) = rx_notas.try_recv() { notas.push(nota); }
+    let visao = guarda.ativa.as_ref().map(|a| a.visao.clone()).unwrap_or_default();
     let gravacao = json!({
+        "visao": visao,
         "id": id, "nome": nome, "inicio": inicio, "fim": agora_ms(),
         "instancia": std::env::var("DNOS_URL").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "https://dnos.dnia.ai".into()),
         "criterio": criterio, "passos": passos, "notas": notas, "encerrada_por": motivo_fim,
@@ -481,7 +585,8 @@ async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
     if let Some(p) = pasta(&app) {
         let _ = std::fs::write(p.join(format!("{id}.json")), gravacao.to_string());
     }
-    if let Ok(mut g) = estado.lock() { g.ativa = None; }
+    guarda.ativa = None;
+    drop(guarda);
     let n = gravacao["passos"].as_array().map(|a| a.len()).unwrap_or(0);
     emitir(&app, "parado", n, Some(&id), Some(motivo_fim.clone()));
     let _ = app.emit("dnos://gravador/pronta", json!({ "gravacao": gravacao }));

@@ -223,9 +223,27 @@ pub(crate) fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: 
         "modo": modo, "agente": agente, "titulo": titulo, "sub": sub, "ouvindo": ouvindo, "foto": foto,
     });
     if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
-        if let Ok(mut g) = e.lock() { g.barra_atual = Some(estado.clone()); }
+        if let Ok(mut g) = e.lock() {
+            let mut estado = estado.clone();
+            if modo == "assistindo" { estado["ouvindo"] = g.barra_atual.as_ref().filter(|b| b["modo"] == "assistindo").map(|b| b["ouvindo"].clone()).unwrap_or(json!(false)); }
+            g.barra_atual = Some(estado.clone());
+            let _ = app.emit("dnos://barra-mac", estado);
+            return;
+        }
     }
     let _ = app.emit("dnos://barra-mac", estado);
+}
+
+/// A barra só acende o microfone quando o capturador detecta fala real.
+pub(crate) fn atualizar_escuta(app: &AppHandle, ouvindo: bool) {
+    if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
+        if let Ok(mut g) = e.lock() {
+            if let Some(v) = g.barra_atual.as_mut().filter(|v| v["modo"] == "assistindo") {
+                v["ouvindo"] = json!(ouvindo);
+                let _ = app.emit("dnos://barra-mac", v.clone());
+            }
+        }
+    }
 }
 
 /// Barra flutuante por cima de tudo: "<agente> está usando o seu computador · passo 3 de 9" + Parar.
@@ -467,7 +485,7 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente
     let (tx_notas, mut rx_notas) = mpsc::unbounded_channel::<Value>();
     let (tx_parar, mut rx_parar) = mpsc::unbounded_channel::<(Option<String>, Option<String>)>();
     if let Ok(mut g) = estado.lock() {
-        g.ativa = Some(Ativa { id: id.clone(), passos: 0, notas: tx_notas, parar: tx_parar });
+        g.ativa = Some(Ativa { id: id.clone(), passos: 0, visao: Vec::new(), notas: tx_notas, parar: tx_parar });
     }
 
     // stdout do ajudante → canal (thread bloqueante; o laço abaixo é async).
@@ -488,11 +506,11 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente
     }
 
     gravador::emitir(&app, "gravando", 0, Some(&id), None);
-    crate::voz::ligar(&app);
+    crate::voz::ligar(&app, &id);
     // Gravando no computador, a janela do dn.os fica atrás do app que a pessoa
     // está demonstrando — sem esta barra ela não tem onde parar (17/09).
     mostrar_barra(&app);
-    falar_na_barra(&app, "assistindo", &agente, "Gravando", "0 passos · fale para anotar".into(), true);
+    falar_na_barra(&app, "assistindo", &agente, "Gravando", "0 passos · fale para anotar".into(), false);
 
     let inicio = gravador::agora_ms();
     let mut passos: Vec<Value> = Vec::new();
@@ -530,10 +548,11 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente
                         let mut p = v;
                         p["n"] = json!(passos.len() + 1);
                         if p.get("hora").is_none() { p["hora"] = json!(gravador::agora_ms()); }
+                        let _ = app.emit("dnos://gravador/passo", json!({ "id": id, "passo": p }));
                         passos.push(p);
                         if let Ok(mut g) = estado.lock() { if let Some(a) = g.ativa.as_mut() { a.passos = passos.len(); } }
                         gravador::emitir(&app, "gravando", passos.len(), Some(&id), None);
-                        falar_na_barra(&app, "assistindo", &agente, "Gravando", format!("{} passos · fale para anotar", passos.len()), true);
+                        falar_na_barra(&app, "assistindo", &agente, "Gravando", format!("{} passos · fale para anotar", passos.len()), false);
                     }
                 }
             }
@@ -546,7 +565,13 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente
     crate::voz::desligar(&app);
     esconder_barra(&app);
 
+    let Ok(mut guarda) = estado.lock() else { return };
+    while let Ok(nota) = rx_notas.try_recv() { notas.push(nota); }
+    let visao = guarda.ativa.as_ref().map(|a| a.visao.clone()).unwrap_or_default();
+    let quadros = passos.iter().filter(|p| p["quadro"].is_string()).count();
     let gravacao = json!({
+        "captura": { "quadros": quadros, "limite_quadros": 80, "limitada": quadros >= 80 },
+        "visao": visao,
         "id": id, "nome": nome, "inicio": inicio, "fim": gravador::agora_ms(), "modo": "mac",
         "instancia": std::env::var("DNOS_URL").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "https://dnos.dnia.ai".into()),
         "criterio": criterio, "passos": passos, "notas": notas, "encerrada_por": motivo_fim,
@@ -555,7 +580,8 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente
     if let Some(p) = gravador::pasta(&app) {
         let _ = std::fs::write(p.join(format!("{id}.json")), gravacao.to_string());
     }
-    if let Ok(mut g) = estado.lock() { g.ativa = None; }
+    guarda.ativa = None;
+    drop(guarda);
     let n = gravacao["passos"].as_array().map(|a| a.len()).unwrap_or(0);
     gravador::emitir(&app, "parado", n, Some(&id), Some(motivo_fim.clone()));
     let _ = app.emit("dnos://gravador/pronta", json!({ "gravacao": gravacao }));
