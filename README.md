@@ -158,3 +158,10 @@ O histórico e aprovação ficam na web/banco: migration de rodadas, deploy de
 skill-manage/executor-bridge, relay exploracao.mjs e Publish são necessários.
 A release isoladamente não habilita toda a função. Teste real no CapCut após
 instalação/deploy ainda é necessário; testes locais usam transporte simulado.
+
+### 0.7.18 · progresso da exploração
+
+A barra distingue espera pelo agente, captura, interpretação visual e próxima
+ ação. O contador explicita ações solicitadas e seu limite, sem apresentar o
+limite como uma meta. O motivo de encerramento fica disponível para a interface;
+uma falha de visão encerra o acesso sem continuar agindo às cegas.

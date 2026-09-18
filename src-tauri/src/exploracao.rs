@@ -7,9 +7,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::maquina::{self,ReservaDeUso};
 #[cfg(target_os="macos")] const AJUDANTE:&[u8]=include_bytes!("../ajudantes/dnos-olhar-mac");
 #[cfg(not(target_os="macos"))] const AJUDANTE:&[u8]=&[];
-struct Sessao { id:String,agente:String,nome:String,app_nome:String,bundle:String,ate:u64,autonomia:bool,acoes:u32,leituras:u32,
+struct Sessao { id:String,agente:String,nome:String,app_nome:String,bundle:String,ate:u64,autonomia:bool,acoes:u32,leituras:u32,iniciada_em:u64,fase:String,
  cancelada:Arc<AtomicBool>,ocupada:bool,ultima:Option<(String,u64,Value)>,pendente:Option<Value>,resultados:Vec<(String,Value)>,_reserva:ReservaDeUso }
-#[derive(Default)] pub struct Estado { conexao:Option<(u64,UnboundedSender<String>)>,sessao:Option<Sessao> }
+#[derive(Default)] pub struct Estado { conexao:Option<(u64,UnboundedSender<String>)>,sessao:Option<Sessao>,ultimo_motivo:Option<String> }
 type Compartilhado=Arc<Mutex<Estado>>;
 fn agora()->u64 {crate::gravador::agora_ms() as u64}
 fn uuid(s:&str)->bool {s.len()==36 && s.bytes().all(|c|c.is_ascii_hexdigit()||c==b'-')}
@@ -19,13 +19,18 @@ fn app_permitido(s:&str)->bool {
 }
 fn enviar(g:&Estado,v:Value) {if let Some((_,tx))=&g.conexao {let _=tx.send(v.to_string());}}
 fn encerrar(app:&AppHandle,g:&mut Estado,motivo:&str) {
- if let Some(s)=g.sessao.take(){s.cancelada.store(true,Ordering::SeqCst);enviar(g,json!({"t":"explorar-fim","sessao":s.id,"motivo":motivo}));enviar(g,json!({"t":"explorar-permissao","permitido":false}));maquina::esconder_barra(app);}
+ if let Some(s)=g.sessao.take(){g.ultimo_motivo=Some(motivo.to_owned());s.cancelada.store(true,Ordering::SeqCst);enviar(g,json!({"t":"explorar-fim","sessao":s.id,"motivo":motivo}));enviar(g,json!({"t":"explorar-permissao","permitido":false}));maquina::esconder_barra(app);}
 }
 fn estado(g:&Estado)->Value {match &g.sessao {
- Some(s)=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":true,"id":s.id,"agente":s.agente,"bundle":s.bundle,"expira_em":s.ate,"acoes":s.acoes,"pendente":s.pendente}),
- None=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":false})}}
+ Some(s)=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":true,"id":s.id,"agente":s.agente,"bundle":s.bundle,"expira_em":s.ate,"acoes":s.acoes,"leituras":s.leituras,"fase":s.fase,"pendente":s.pendente}),
+ None=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":false,"ultimo_motivo":g.ultimo_motivo})}}
+fn rotulo_fase(fase:&str)->&str {match fase {
+ "aguardando"=>"Aguardando o agente iniciar", "demorado"=>"O agente ainda não iniciou; confira o chat",
+ "observando"=>"Capturando a janela", "aguardando_leitura"=>"Captura pronta; aguardando leitura",
+ "interpretando"=>"Interpretando a imagem", "agindo"=>"Executando uma ação", "decidindo"=>"Analisando o próximo passo",
+ _=>"Sessão autorizada"}}
 fn barra(app:&AppHandle,s:&Sessao) {
- let sub=if let Some(p)=&s.pendente {format!("Aprovar: {}",p["passo"]["descricao"].as_str().unwrap_or("próxima ação"))} else {format!("{} ações de 40 · {} · Parar encerra",s.acoes,if s.autonomia{"autonomia autorizada"}else{"ações acompanhadas"})};
+ let sub=if let Some(p)=&s.pendente {format!("Aprovar: {}",p["passo"]["descricao"].as_str().unwrap_or("próxima ação"))} else {format!("{} · {} ações solicitadas (limite 40)",rotulo_fase(&s.fase),s.acoes)};
  maquina::falar_na_barra(app,if s.pendente.is_some(){"explorar-aprovacao"}else{"explorando"},&s.nome,&s.app_nome,sub,false);
 }
 #[tauri::command]
@@ -58,7 +63,7 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   let minutos=p["minutos"].as_u64().filter(|m|[5,10,15].contains(m)).ok_or("prazo_invalido")?;
   let autonomia=p["autonomia"].as_bool().unwrap_or(false);let ate=agora()+minutos*60_000;
   let reserva=maquina::reservar_uso(&app,"explorando")?;
-  g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva});
+  g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva});
   maquina::mostrar_barra(&app);
   if app.get_webview_window("barra-mac").is_none(){encerrar(&app,&mut g,"barra_indisponivel");return Err("Barra indisponível".into());}
   barra(&app,g.sessao.as_ref().unwrap());
@@ -125,7 +130,7 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   let mut p=passo.clone();p["bundle"]=json!(s.bundle);p["impressao"]=leitura["impressao"].clone();p["janela"]=leitura["janela"]["numero"].clone();entrada=Some(p);
   s.ultima=None;s.acoes+=1;
  }
- s.ocupada=true;s.leituras+=1;barra(app,s);
+ s.fase=if agir{"agindo"}else{"observando"}.into();s.ocupada=true;s.leituras+=1;barra(app,s);
  let cancelada=s.cancelada.clone();let bundle=s.bundle.clone();let sessao=s.id.clone();let h=app.clone();let e=app.state::<Compartilhado>().inner().clone();
  std::thread::spawn(move||{
   let resultado=(||->Result<Value,String>{
@@ -136,7 +141,7 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   })();
   if let Ok(mut g)=e.lock(){if g.conexao.as_ref().map(|c|c.0)!=Some(geracao){return;}
    let Some(s)=g.sessao.as_mut() else{return};if s.id!=sessao||!Arc::ptr_eq(&s.cancelada,&cancelada)||cancelada.load(Ordering::SeqCst)||s.ate<=agora(){return;}
-   s.ocupada=false;let resposta=resultado.unwrap_or_else(|motivo|json!({"ok":false,"motivo":motivo,"acao_pode_ter_ocorrido":agir}));
+   s.ocupada=false;s.fase="aguardando_leitura".into();let resposta=resultado.unwrap_or_else(|motivo|json!({"ok":false,"motivo":motivo,"acao_pode_ter_ocorrido":agir}));
    if resposta["ok"]==true{s.ultima=Some((req.clone(),agora(),resposta["leitura"].clone()));}
    s.resultados.push((req.clone(),resposta));if s.resultados.len()>2{s.resultados.remove(0);}barra(&h,s);
   };
@@ -147,7 +152,12 @@ pub fn receber(app:&AppHandle,geracao:u64,v:&Value){
  if g.conexao.as_ref().map(|c|c.0)!=Some(geracao){return;}
  let Some(s)=g.sessao.as_ref()else{return};if v["sessao"]!=s.id||v["agente"]!=s.agente{return;}
  if s.ate<=agora(){encerrar(app,&mut g,"tempo_esgotado");return;}
- if v["acao"]=="fechar"{encerrar(app,&mut g,"concluida");return;}
+ if v["acao"]=="fechar"{let motivo=v["motivo"].as_str().unwrap_or("concluida");encerrar(app,&mut g,motivo);return;}
+ if v["acao"]=="situacao" {
+  if let Some(fase)=v["fase"].as_str().filter(|f|["interpretando","decidindo"].contains(f)) {
+   if let Some(s)=g.sessao.as_mut(){s.fase=fase.into();barra(app,s);}
+  }return;
+ }
  let resultado=if v["acao"]=="consultar" {
   let refid=v["operacao"].as_str().unwrap_or("");
   s.resultados.iter().find(|(id,_)|id==refid).map(|(_,r)|r.clone()).unwrap_or_else(||json!({"ok":true,"pendente":true,"aguarda_aprovacao":s.pendente.is_some()}))
@@ -174,7 +184,7 @@ fn ajudante(app:&AppHandle,args:&[&str],entrada:Option<Value>,cancelada:&AtomicB
  let _=f.kill();let _=f.wait();if erro.is_some() && args==["--acao"] {let _=Command::new(&arq).arg("--soltar").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();}let b=leitor.join().map_err(|_|"saida_indisponivel")?.map_err(|_|"saida_indisponivel")?;
  if let Some(e)=erro{return Err(e.into());}if b.len()>3_000_000{return Err("leitura_muito_grande".into());}serde_json::from_slice(&b).map_err(|_|"saida_invalida".into())
 }
-pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(Estado::default())));let h=app.clone();std::thread::spawn(move||loop{std::thread::sleep(Duration::from_millis(200));if let Ok(mut g)=h.state::<Compartilhado>().lock(){if g.sessao.as_ref().map(|s|s.ate<=agora()).unwrap_or(false){encerrar(&h,&mut g,"tempo_esgotado");}}});}
+pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(Estado::default())));let h=app.clone();std::thread::spawn(move||loop{std::thread::sleep(Duration::from_millis(200));if let Ok(mut g)=h.state::<Compartilhado>().lock(){if g.sessao.as_ref().map(|s|s.ate<=agora()).unwrap_or(false){encerrar(&h,&mut g,"tempo_esgotado");}else if let Some(s)=g.sessao.as_mut(){if s.fase=="aguardando"&&agora()-s.iniciada_em>60_000{s.fase="demorado".into();barra(&h,s);}}}});}
 #[cfg(test)] mod testes{use super::*;
  #[test]fn rejeita_scripts_e_coordenadas_invalidas(){assert!(!validar_passo(&json!({"tipo":"shell","descricao":"testar","risco":"normal"})));assert!(!validar_passo(&json!({"tipo":"clique","descricao":"x","risco":"normal","x":2,"y":0})));assert!(validar_passo(&json!({"tipo":"clique","descricao":"abrir painel","risco":"normal","x":0.5,"y":0.5})));assert!(!validar_passo(&json!({"tipo":"texto","descricao":"colar","risco":"normal","texto":"a\nb"})));}
  #[test]fn nao_oferece_terminais_ou_cofres(){assert!(app_permitido("com.lemon.lvoverseas"));assert!(!app_permitido("com.apple.Terminal"));assert!(!app_permitido("com.apple.keychainaccess"));}

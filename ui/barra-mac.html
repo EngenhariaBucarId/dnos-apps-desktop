@@ -103,7 +103,7 @@
 
     const quem = p.agente || "dn.os";
     $("aprovar").hidden = modo !== "explorar-aprovacao";
-    const acao = modo.startsWith("explor") ? "está explorando para aprender" : modo === "olhando" ? "pode olhar a janela autorizada" : modo === "assistindo" ? "está assistindo você" : "está usando o seu computador";
+    const acao = modo.startsWith("explor") ? "tem uma sessão de aprendizado" : modo === "olhando" ? "pode olhar a janela autorizada" : modo === "assistindo" ? "está assistindo você" : "está usando o seu computador";
     $("titulo").innerHTML = '<span class="quem"></span> ' + acao + (p.titulo ? ' · <span class="oque"></span>' : "");
     $("titulo").querySelector(".quem").textContent = quem;
     if (p.titulo) $("titulo").querySelector(".oque").textContent = p.titulo;
