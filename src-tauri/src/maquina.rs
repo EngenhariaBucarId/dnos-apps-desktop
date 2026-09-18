@@ -193,7 +193,7 @@ fn mostrar_barra(app: &AppHandle) {
     if app.get_webview_window("barra-mac").is_some() { return; }
     let _ = tauri::WebviewWindowBuilder::new(app, "barra-mac", tauri::WebviewUrl::App("barra-mac.html".into()))
         .title("dn.os")
-        .inner_size(420.0, 56.0)
+        .inner_size(560.0, 58.0)
         .position(0.0, 0.0)
         .decorations(false)
         .always_on_top(true)
@@ -205,7 +205,7 @@ fn mostrar_barra(app: &AppHandle) {
         // Topo, centralizada no monitor principal.
         if let Ok(Some(m)) = w.primary_monitor() {
             let largura = m.size().width as f64 / m.scale_factor();
-            let _ = w.set_position(tauri::LogicalPosition::new(((largura - 420.0) / 2.0).max(0.0), 8.0));
+            let _ = w.set_position(tauri::LogicalPosition::new(((largura - 560.0) / 2.0).max(0.0), 8.0));
         }
     }
 }

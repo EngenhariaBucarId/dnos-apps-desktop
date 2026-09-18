@@ -39,9 +39,9 @@
   .barra.assistindo{border-color:rgba(138,92,255,.4);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 18px var(--glow-ia)}
 
   /* Agente: foto quando o dn.os já mandou; senão a inicial, no tom do modo. */
-  .agente{position:relative;flex:none;width:34px;height:34px}
-  .foto{width:34px;height:34px;border-radius:11px;object-fit:cover;display:block;background:var(--superficie-2)}
-  .inicial{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+  .agente{position:relative;flex:none;width:32px;height:32px}
+  .foto{width:32px;height:32px;border-radius:11px;object-fit:cover;display:block;background:var(--superficie-2)}
+  .inicial{width:32px;height:32px;border-radius:11px;display:flex;align-items:center;justify-content:center;
     background:var(--superficie-2);font-weight:600;font-size:14px;color:var(--texto-fraco)}
   .anel{position:absolute;inset:-3px;border-radius:14px;border:1.5px solid var(--primaria);opacity:.9;
     animation:pulso 1.8s ease-out infinite}
@@ -62,8 +62,6 @@
   .mic.ouvindo{color:var(--ia);box-shadow:0 0 12px var(--glow-ia)}
   .mic svg{width:12px;height:12px}
 
-  .esc{font-size:10px;color:var(--texto-fraco);flex:none;opacity:.8}
-  .esc[hidden]{display:none}
   button{all:unset;cursor:pointer;flex:none;background:var(--destrutiva);color:#fff;font-weight:600;font-size:12px;
     padding:8px 14px;border-radius:999px;transition:background .15s}
   button:hover{background:#ff2a20}
@@ -82,8 +80,7 @@
   <span class="mic" id="mic" title="Fale para anotar">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
   </span>
-  <span class="esc" id="esc">Esc Esc para parar</span>
-  <button id="parar">Parar</button>
+  <button id="parar" title="Parar">Parar</button>
 </div>
 <script>
 (async () => {
@@ -111,9 +108,9 @@
     else { $("foto").hidden = true; $("inicial").hidden = false; $("inicial").textContent = quem.slice(0, 2).toLowerCase(); }
 
     $("mic").className = "mic" + (modo === "assistindo" ? " ligado" : "") + (p.ouvindo ? " ouvindo" : "");
-    // O atalho é da execução; na gravação não existe, e prometer atalho que
-    // não funciona é pior que não mostrar nada.
-    $("esc").hidden = modo !== "atuando";
+    // O atalho só existe na execução; prometer atalho que não funciona é pior
+    // que não prometer nada. Fora do corpo da barra: ocupava o espaço do texto.
+    $("parar").title = modo === "atuando" ? "Parar · ou Esc Esc" : "Parar a gravação";
   });
 
   $("parar").onclick = () => {
