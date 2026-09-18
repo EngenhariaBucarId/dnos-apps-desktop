@@ -163,6 +163,15 @@ fn recompor(g: &mut Barra) -> Value {
     e
 }
 
+/// A foto de um agente para quem desenha barra fora do Chrome (a janela do
+/// "Usar meu computador", 17/09). Mesma fonte da barra do Chrome: o que o
+/// dn.os mandou, com as do time embutidas como reserva.
+pub fn foto_do_agente(app: &AppHandle, nome: &str) -> Option<String> {
+    let b = app.try_state::<Compartilhado>()?;
+    let g = b.lock().ok()?;
+    foto_de(&g, nome)
+}
+
 /// A página do dn.os manda as fotos dos agentes (`dnos://barra/fotos`
 /// `{ "milo": "data:image/png;base64,…", … }`), para cobrir agentes novos.
 pub fn fotos(app: &AppHandle, mapa: Value) {

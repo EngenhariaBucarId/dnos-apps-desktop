@@ -178,7 +178,17 @@ fn emitir_roteiro(app: &AppHandle, v: Value) {
     let _ = app.emit("dnos://roteiro", v);
 }
 
-/// Barra flutuante por cima de tudo: "<agente> está usando o CapCut · passo 3 de 9" + Parar.
+/// Escreve na barra flutuante. `modo` decide o texto e quem o Parar chama:
+/// "atuando" (o agente executa) ou "assistindo" (a pessoa demonstra, 17/09).
+/// A foto sai da mesma fonte da barra do Chrome.
+fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: &str, sub: String, ouvindo: bool) {
+    let foto = if agente.is_empty() { None } else { crate::barra::foto_do_agente(app, agente) };
+    let _ = app.emit("dnos://barra-mac", json!({
+        "modo": modo, "agente": agente, "titulo": titulo, "sub": sub, "ouvindo": ouvindo, "foto": foto,
+    }));
+}
+
+/// Barra flutuante por cima de tudo: "<agente> está usando o seu computador · passo 3 de 9" + Parar.
 fn mostrar_barra(app: &AppHandle) {
     if app.get_webview_window("barra-mac").is_some() { return; }
     let _ = tauri::WebviewWindowBuilder::new(app, "barra-mac", tauri::WebviewUrl::App("barra-mac.html".into()))
@@ -232,7 +242,7 @@ pub async fn executar(app: AppHandle, pedido: Value) {
         std::thread::spawn(move || { for l in BufReader::new(s).lines().map_while(Result::ok) { if let Ok(v) = serde_json::from_str::<Value>(&l) { if tx.send(v).is_err() { break; } } } });
     }
     mostrar_barra(&app);
-    let _ = app.emit("dnos://barra-mac", json!({ "agente": agente, "titulo": nome, "sub": format!("preparando · {total} passos") }));
+    falar_na_barra(&app, "atuando", &agente, &nome, format!("preparando · {total} passos"), false);
     emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "id": id, "passo": 0, "total": total, "texto": "preparando" }));
     let mut fim = json!({ "estado": "erro", "modo": "mac", "motivo": "o executor da máquina fechou sem terminar" });
     while let Some(v) = rx.recv().await {
@@ -240,7 +250,7 @@ pub async fn executar(app: AppHandle, pedido: Value) {
             "passo" => {
                 if v["estado"].as_str() == Some("rodando") {
                     let texto = v["texto"].as_str().unwrap_or("").to_string();
-                    let _ = app.emit("dnos://barra-mac", json!({ "agente": agente, "titulo": nome, "sub": format!("passo {} de {} · {}", v["n"], total, texto) }));
+                    falar_na_barra(&app, "atuando", &agente, &nome, format!("passo {} de {} · {}", v["n"], total, texto), false);
                     emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "id": id, "passo": v["n"], "total": total, "texto": texto }));
                 }
             }
@@ -365,7 +375,7 @@ pub fn instalar(app: &AppHandle) {
 /// A gravação em si. Mesmo contrato do gravador do Chrome: `estado` guarda a
 /// ativa (notas e parar chegam por ela), o JSON final vai para a mesma pasta e
 /// sai por `dnos://gravador/pronta`.
-pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
+pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente: String) {
     if estado.lock().map(|g| g.ativa.is_some()).unwrap_or(false) {
         return gravador::emitir(&app, "erro", 0, None, Some("já existe uma gravação em andamento".into()));
     }
@@ -413,6 +423,10 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
 
     gravador::emitir(&app, "gravando", 0, Some(&id), None);
     crate::voz::ligar(&app);
+    // Gravando no computador, a janela do dn.os fica atrás do app que a pessoa
+    // está demonstrando — sem esta barra ela não tem onde parar (17/09).
+    mostrar_barra(&app);
+    falar_na_barra(&app, "assistindo", &agente, "Gravando", "0 passos · fale para anotar".into(), true);
 
     let inicio = gravador::agora_ms();
     let mut passos: Vec<Value> = Vec::new();
@@ -453,6 +467,7 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
                         passos.push(p);
                         if let Ok(mut g) = estado.lock() { if let Some(a) = g.ativa.as_mut() { a.passos = passos.len(); } }
                         gravador::emitir(&app, "gravando", passos.len(), Some(&id), None);
+                        falar_na_barra(&app, "assistindo", &agente, "Gravando", format!("{} passos · fale para anotar", passos.len()), true);
                     }
                 }
             }
@@ -463,6 +478,7 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String) {
     let _ = filho.kill();
     let _ = filho.wait();
     crate::voz::desligar(&app);
+    esconder_barra(&app);
 
     let gravacao = json!({
         "id": id, "nome": nome, "inicio": inicio, "fim": gravador::agora_ms(), "modo": "mac",

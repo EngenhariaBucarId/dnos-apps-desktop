@@ -1,25 +1,124 @@
 <!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><title>dn.os</title>
+<!--
+  Barra flutuante do "Usar meu computador" (17/09/2026).
+
+  Serve aos DOIS lados do recurso, e o modo muda quem manda parar:
+    · atuando    — o agente executa um roteiro; Parar interrompe a execução.
+    · assistindo — a pessoa demonstra e o agente assiste; Parar encerra a gravação.
+
+  Design: Luxury Intelligence (tokens --lux-* do dn.os). Glow é funcional, só
+  marca o que está vivo — nunca enfeite. Vermelho só no Parar, que é a única
+  ação destrutiva daqui.
+
+  Fala "seu computador", nunca "seu Mac": o recurso também vai para Windows.
+-->
 <style>
-html,body{margin:0;background:transparent;font:13px Sora,Inter,-apple-system,system-ui,sans-serif;color:#F0F4FF;-webkit-user-select:none;user-select:none;overflow:hidden}
-.b{display:flex;align-items:center;gap:10px;height:56px;padding:0 12px 0 14px;background:rgba(11,21,38,.96);border:1px solid rgba(61,97,255,.35);border-radius:14px;box-shadow:0 12px 40px -12px rgba(0,0,0,.7)}
-.p{width:9px;height:9px;border-radius:50%;background:#3D61FF;box-shadow:0 0 0 0 rgba(61,97,255,.5);animation:pulso 1.4s ease-out infinite;flex:none}
-@keyframes pulso{70%{box-shadow:0 0 0 10px rgba(61,97,255,0)}100%{box-shadow:0 0 0 0 rgba(61,97,255,0)}}
-.t{min-width:0;flex:1}.t b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.t span{display:block;font-size:11px;color:#A8B3C7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-button{all:unset;cursor:pointer;background:#E41A11;color:#fff;font-weight:600;font-size:12px;padding:7px 12px;border-radius:999px;flex:none}
-button:hover{background:#ff2a20}
-.esc{font-size:10px;color:#748198;flex:none}
+  :root{
+    --fundo: rgba(8,13,26,.97);
+    --superficie-2: #101B2F;
+    --texto: #F0F4FF;
+    --texto-fraco: #8FA3C7;
+    --borda-neutra: rgba(143,163,199,.14);
+    --borda-primaria: rgba(61,97,255,.45);
+    --primaria: #3D61FF;
+    --ia: #8A5CFF;
+    --glow: rgba(61,97,255,.18);
+    --glow-ia: rgba(138,92,255,.16);
+    --destrutiva: #E41A11;
+  }
+  html,body{margin:0;background:transparent;overflow:hidden;-webkit-user-select:none;user-select:none;
+    font:13px Inter,-apple-system,"Segoe UI",system-ui,sans-serif;color:var(--texto)}
+
+  .barra{display:flex;align-items:center;gap:11px;height:56px;padding:0 10px 0 12px;
+    background:var(--fundo);border:1px solid var(--borda-neutra);border-radius:16px;
+    box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.02) inset}
+  /* Atuando: a borda acende no azul da marca — é o estado em que a máquina
+     está fora da mão da pessoa, e isso tem que ser visível de canto de olho. */
+  .barra.atuando{border-color:var(--borda-primaria);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 22px var(--glow)}
+  .barra.assistindo{border-color:rgba(138,92,255,.4);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 18px var(--glow-ia)}
+
+  /* Agente: foto quando o dn.os já mandou; senão a inicial, no tom do modo. */
+  .agente{position:relative;flex:none;width:34px;height:34px}
+  .foto{width:34px;height:34px;border-radius:11px;object-fit:cover;display:block;background:var(--superficie-2)}
+  .inicial{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+    background:var(--superficie-2);font-weight:600;font-size:14px;color:var(--texto-fraco)}
+  .anel{position:absolute;inset:-3px;border-radius:14px;border:1.5px solid var(--primaria);opacity:.9;
+    animation:pulso 1.8s ease-out infinite}
+  .assistindo .anel{border-color:var(--ia)}
+  @keyframes pulso{0%{transform:scale(1);opacity:.9}70%{transform:scale(1.14);opacity:0}100%{opacity:0}}
+  @media (prefers-reduced-motion: reduce){ .anel{animation:none;opacity:.55} }
+
+  .textos{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+  .titulo{font-weight:600;font-size:13px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sub{font-size:11px;line-height:1.3;color:var(--texto-fraco);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .quem{color:var(--primaria)}
+  .assistindo .quem{color:var(--ia)}
+
+  /* Microfone: só na gravação, e só acende quando está ouvindo de verdade. */
+  .mic{flex:none;width:22px;height:22px;border-radius:8px;display:none;align-items:center;justify-content:center;
+    background:var(--superficie-2);color:var(--texto-fraco)}
+  .mic.ligado{display:flex}
+  .mic.ouvindo{color:var(--ia);box-shadow:0 0 12px var(--glow-ia)}
+  .mic svg{width:12px;height:12px}
+
+  .esc{font-size:10px;color:var(--texto-fraco);flex:none;opacity:.8}
+  .esc[hidden]{display:none}
+  button{all:unset;cursor:pointer;flex:none;background:var(--destrutiva);color:#fff;font-weight:600;font-size:12px;
+    padding:8px 14px;border-radius:999px;transition:background .15s}
+  button:hover{background:#ff2a20}
+  button:focus-visible{outline:2px solid #fff;outline-offset:2px}
 </style></head><body>
-<div class="b"><i class="p"></i><div class="t"><b id="t">dn.os está usando o seu Mac</b><span id="s">preparando…</span></div><span class="esc">Esc Esc para parar</span><button id="parar">Parar</button></div>
+<div class="barra atuando" id="barra">
+  <div class="agente">
+    <div class="inicial" id="inicial">dn</div>
+    <img class="foto" id="foto" alt="" hidden>
+    <i class="anel"></i>
+  </div>
+  <div class="textos">
+    <b class="titulo" id="titulo"><span class="quem">dn.os</span> está usando o seu computador</b>
+    <span class="sub" id="sub">preparando…</span>
+  </div>
+  <span class="mic" id="mic" title="Fale para anotar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
+  </span>
+  <span class="esc" id="esc">Esc Esc para parar</span>
+  <button id="parar">Parar</button>
+</div>
 <script>
 (async () => {
   const ev = window.__TAURI__ && window.__TAURI__.event;
   if (!ev) return;
+  const $ = (id) => document.getElementById(id);
+  // "atuando" é o padrão: a barra nasceu da execução, e uma casca que ainda
+  // não manda `modo` tem que continuar se comportando como antes.
+  let modo = "atuando";
+
   await ev.listen("dnos://barra-mac", (e) => {
     const p = e.payload || {};
-    document.getElementById("t").textContent = (p.agente ? p.agente + " está usando o seu Mac" : "dn.os está usando o seu Mac") + (p.titulo ? " · " + p.titulo : "");
-    document.getElementById("s").textContent = p.sub || "";
+    modo = p.modo === "assistindo" ? "assistindo" : "atuando";
+    $("barra").className = "barra " + modo;
+
+    const quem = p.agente || "dn.os";
+    const acao = modo === "assistindo" ? "está assistindo você" : "está usando o seu computador";
+    $("titulo").innerHTML = '<span class="quem"></span> ' + acao + (p.titulo ? ' · <span class="oque"></span>' : "");
+    $("titulo").querySelector(".quem").textContent = quem;
+    if (p.titulo) $("titulo").querySelector(".oque").textContent = p.titulo;
+    $("sub").textContent = p.sub || "";
+
+    // Foto do agente (data URI, vinda do dn.os); sem foto, a inicial dele.
+    if (p.foto) { $("foto").src = p.foto; $("foto").hidden = false; $("inicial").hidden = true; }
+    else { $("foto").hidden = true; $("inicial").hidden = false; $("inicial").textContent = quem.slice(0, 2).toLowerCase(); }
+
+    $("mic").className = "mic" + (modo === "assistindo" ? " ligado" : "") + (p.ouvindo ? " ouvindo" : "");
+    // O atalho é da execução; na gravação não existe, e prometer atalho que
+    // não funciona é pior que não mostrar nada.
+    $("esc").hidden = modo !== "atuando";
   });
-  document.getElementById("parar").onclick = () => ev.emit("dnos://roteiro/parar", {});
+
+  $("parar").onclick = () => {
+    if (modo === "assistindo") ev.emit("dnos://gravador/parar-pela-barra", {});
+    else ev.emit("dnos://roteiro/parar", {});
+  };
 })();
 </script></body></html>

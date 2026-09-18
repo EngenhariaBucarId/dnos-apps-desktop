@@ -129,10 +129,12 @@ pub fn instalar(app: &AppHandle) {
         let nome = v["nome"].as_str().unwrap_or("").to_string();
         // modo "mac" (13/09): a máquina toda, pelo ajudante em Swift (maquina.rs).
         let na_maquina = v["modo"].as_str() == Some("mac");
+        // Quem está assistindo a demonstração — vai para a barra flutuante (17/09).
+        let agente = v["agente"].as_str().unwrap_or("").to_string();
         let h2 = h.clone();
         let e2 = e.clone();
         tauri::async_runtime::spawn(async move {
-            if na_maquina { crate::maquina::iniciar(h2, e2, nome).await } else { iniciar(h2, e2, nome).await }
+            if na_maquina { crate::maquina::iniciar(h2, e2, nome, agente).await } else { iniciar(h2, e2, nome).await }
         });
     });
 
@@ -160,6 +162,16 @@ pub fn instalar(app: &AppHandle) {
     });
 
     let h = app.clone();
+    // Parar pela barra flutuante (Chrome ou computador). O evento já era
+    // emitido pelas duas barras, mas ninguém escutava: o botão não fazia nada
+    // (achado em 17/09). Encerra igual ao Parar da janela, sem critério.
+    let e = estado.clone();
+    app.listen_any("dnos://gravador/parar-pela-barra", move |_| {
+        if let Ok(g) = e.lock() {
+            if let Some(a) = g.ativa.as_ref() { let _ = a.parar.send((None, None)); }
+        }
+    });
+
     let e = estado.clone();
     app.listen_any("dnos://gravador/estado", move |_| {
         let atual = e.lock().ok().and_then(|g| g.ativa.as_ref().map(|a| (a.id.clone(), a.passos)));
