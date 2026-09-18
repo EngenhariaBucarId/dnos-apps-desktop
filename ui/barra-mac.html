@@ -35,7 +35,7 @@
     box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.02) inset}
   /* Atuando: a borda acende no azul da marca — é o estado em que a máquina
      está fora da mão da pessoa, e isso tem que ser visível de canto de olho. */
-  .barra.atuando{border-color:var(--borda-primaria);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 22px var(--glow)}
+  .barra.atuando,.barra.explorando,.barra.explorar-aprovacao{border-color:var(--borda-primaria);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 22px var(--glow)}
   .barra.olhando,.barra.assistindo{border-color:rgba(138,92,255,.4);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 18px var(--glow-ia)}
 
   /* Agente: foto quando o dn.os já mandou; senão a inicial, no tom do modo. */
@@ -67,6 +67,7 @@
 
   button{all:unset;cursor:pointer;flex:none;background:var(--destrutiva);color:#fff;font-weight:600;font-size:12px;
     padding:8px 14px;border-radius:999px;transition:background .15s}
+  button[hidden]{display:none}
   button:hover{background:#ff2a20}
   button:focus-visible{outline:2px solid #fff;outline-offset:2px}
 </style></head><body>
@@ -83,6 +84,7 @@
   <span class="mic" id="mic" title="Fale para anotar">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
   </span>
+  <button id="aprovar" hidden style="background:var(--primaria)">Aprovar ação</button>
   <button id="parar" title="Parar">Parar</button>
 </div>
 <script>
@@ -96,11 +98,12 @@
 
   await ev.listen("dnos://barra-mac", (e) => {
     const p = e.payload || {};
-    modo = ["assistindo", "olhando"].includes(p.modo) ? p.modo : "atuando";
+    modo = ["assistindo", "olhando", "explorando", "explorar-aprovacao"].includes(p.modo) ? p.modo : "atuando";
     $("barra").className = "barra " + modo;
 
     const quem = p.agente || "dn.os";
-    const acao = modo === "olhando" ? "pode olhar a janela autorizada" : modo === "assistindo" ? "está assistindo você" : "está usando o seu computador";
+    $("aprovar").hidden = modo !== "explorar-aprovacao";
+    const acao = modo.startsWith("explor") ? "está explorando para aprender" : modo === "olhando" ? "pode olhar a janela autorizada" : modo === "assistindo" ? "está assistindo você" : "está usando o seu computador";
     $("titulo").innerHTML = '<span class="quem"></span> ' + acao + (p.titulo ? ' · <span class="oque"></span>' : "");
     $("titulo").querySelector(".quem").textContent = quem;
     if (p.titulo) $("titulo").querySelector(".oque").textContent = p.titulo;
@@ -114,7 +117,7 @@
     // O atalho só existe na execução; prometer atalho que não funciona é pior
     // que não prometer nada. Fora do corpo da barra: ocupava o espaço do texto.
     $("parar").textContent = modo === "assistindo" ? "Finalizar" : "Parar";
-    $("parar").title = modo === "atuando" ? "Parar · ou Esc Esc" : modo === "olhando" ? "Parar a observação" : "Finalizar demonstração e revisar";
+    $("parar").title = modo.startsWith("explor") ? "Parar a exploração" : modo === "atuando" ? "Parar · ou Esc Esc" : modo === "olhando" ? "Parar a observação" : "Finalizar demonstração e revisar";
   });
 
   // A criação da webview e o primeiro estado acontecem em processos
@@ -122,7 +125,18 @@
   // em que a barra podia parecer "atuando" durante uma gravação.
   await ev.emit("dnos://barra-mac/pronta", {});
 
+  let pendenteId = null;
+  setInterval(async () => {
+    if (!modo.startsWith("explor")) return;
+    try { const s=await window.__TAURI__.core.invoke("explorar_computador",{acao:"estado"}); pendenteId=s.pendente?.requisicao || null; $("aprovar").hidden=!pendenteId; } catch {}
+  }, 500);
+  $("aprovar").onclick = async () => {
+    if (!pendenteId) return;
+    const requisicao=pendenteId;pendenteId=null;$("aprovar").hidden=true;
+    try { await window.__TAURI__.core.invoke("explorar_computador",{acao:"aprovar",pedido:{requisicao}}); } catch {}
+  };
   $("parar").onclick = () => {
+    if (modo.startsWith("explor")) { window.__TAURI__.core.invoke("explorar_computador",{acao:"parar"}); return; }
     if (modo === "olhando") window.__TAURI__.core.invoke("olhar_computador", { acao: "parar" });
     else if (modo === "assistindo") ev.emit("dnos://gravador/parar-pela-barra", {});
     else ev.emit("dnos://roteiro/parar", {});

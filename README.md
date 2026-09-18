@@ -134,3 +134,27 @@ Validação: helper universal compilado, dez testes Rust e teste web do fluxo
 completo com ponte simulada (inclui fala tardia). Teste assinado com uma
 nova demonstração real do CapCut precisa ser feito após instalar esta versão
 **e publicar o frontend correspondente**. Nenhuma edge ou migration nova.
+
+
+## Exploração e rodadas · 0.7.17
+
+No macOS, Aprenda comigo → No meu computador oferece Explore e aprenda.
+A sessão escolhe app aberto, agente, rodada e duração (5/10/15 min). Modo
+acompanhado aprova cada ação; autônomo permite cliques/rolagens/arrastos comuns,
+com aprovação para texto/teclas e ações sensíveis. Até 40 ações/80 capturas.
+Somente apps autorizados; terminais, cofres e Ajustes ficam fora. Botão Parar,
+queda/troca de conexão e expiração revogam a sessão. Cada ação consome uma
+observação e confere a impressão da janela antes de executar, seguida de nova
+captura. Não se trata de sandbox semântico do software nem de edição validada
+em todos os apps. Pausar animações pode ser necessário para uma imagem estável.
+
+O protocolo `explorar-v1` usa a conexão autenticada existente. O comando IPC
+`explorar_computador` é restrito à origem da instância; barra só consulta,
+aprova/recusa a ação pelo id exato e para. Resultados aguardam consulta, nunca
+reexecução automática. Ajuda Swift recebe entrada JSON limitada, sem shell
+ou caminhos escolhidos pelo modelo. Cancelar libera entradas pressionadas.
+
+O histórico e aprovação ficam na web/banco: migration de rodadas, deploy de
+skill-manage/executor-bridge, relay exploracao.mjs e Publish são necessários.
+A release isoladamente não habilita toda a função. Teste real no CapCut após
+instalação/deploy ainda é necessário; testes locais usam transporte simulado.

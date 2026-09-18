@@ -5,5 +5,5 @@
   "windows": ["main", "barra-mac"],
   "local": true,
   "remote": { "urls": ["https://dnos.dnia.ai/*"] },
-  "permissions": ["allow-olhar-computador"]
+  "permissions": ["allow-olhar-computador", "allow-explorar-computador"]
 }

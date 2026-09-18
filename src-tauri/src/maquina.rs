@@ -353,7 +353,7 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                 espera = 5;
                 let (mut tx, mut rx) = ws.split();
                 let versao = app.package_info().version.to_string();
-                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao, "capacidades": ["olhar-v1"] }).to_string().into())).await.is_err() { continue; }
+                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao, "capacidades": ["olhar-v1", "explorar-v1"] }).to_string().into())).await.is_err() { continue; }
                 meu_chrome::registrar(&app, "no-mac: conectado ao relay");
                 // Andamento do roteiro → relay (só os eventos com id, que vieram de lá).
                 let (para_relay, mut fila) = mpsc::unbounded_channel::<String>();
@@ -369,13 +369,14 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                 let mut pulso = tokio::time::interval(std::time::Duration::from_secs(25));
                 loop {
                     tokio::select! {
-                        Some(m) = fila.recv() => { if crate::olhar::pode_enviar(&app, &m) && tx.send(Message::Text(m.into())).await.is_err() { break; } }
+                        Some(m) = fila.recv() => { if crate::olhar::pode_enviar(&app, &m) && crate::exploracao::pode_enviar(&app, &m) && tx.send(Message::Text(m.into())).await.is_err() { break; } }
                         _ = pulso.tick() => { if tx.send(Message::Text(json!({ "t": "ping" }).to_string().into())).await.is_err() { break; } }
                         msg = rx.next() => {
                             match msg {
                                 Some(Ok(Message::Text(t))) => {
                                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                                        if v["t"] == "pronto-mac" { crate::olhar::conectar(&app, geracao, para_olhar.clone()); }
+                                        if v["t"] == "pronto-mac" { crate::olhar::conectar(&app, geracao, para_olhar.clone()); crate::exploracao::conectar(&app, geracao, para_olhar.clone()); }
+                                        if v["t"] == "explorar" { crate::exploracao::receber(&app, geracao, &v); }
                                         if v["t"] == "olhar" || v["t"] == "sessao-fim" { crate::olhar::receber(&app, geracao, &v); }
                                         if v["t"] == "roteiro" {
                                             meu_chrome::registrar(&app, &format!("no-mac: roteiro {} ({})", v["id"].as_str().unwrap_or("?").chars().take(8).collect::<String>(), v["nome"].as_str().unwrap_or("")));
@@ -390,9 +391,9 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                             }
                         }
                     }
-                    if estado.lock().map(|g| g.geracao != geracao).unwrap_or(true) { crate::olhar::desconectar(&app, geracao); let _ = tx.close().await; app.unlisten(ouvinte); return; }
+                    if estado.lock().map(|g| g.geracao != geracao).unwrap_or(true) { crate::olhar::desconectar(&app, geracao); crate::exploracao::desconectar(&app, geracao); let _ = tx.close().await; app.unlisten(ouvinte); return; }
                 }
-                crate::olhar::desconectar(&app, geracao);
+                crate::olhar::desconectar(&app, geracao); crate::exploracao::desconectar(&app, geracao);
                 app.unlisten(ouvinte);
                 meu_chrome::registrar(&app, "no-mac: conexão caiu, religando");
             }
@@ -432,7 +433,7 @@ pub fn instalar(app: &AppHandle) {
             }
             Err(_) => return,
         };
-        crate::olhar::invalidar(&h);
+        crate::olhar::invalidar(&h); crate::exploracao::invalidar(&h);
         let h2 = h.clone();
         tauri::async_runtime::spawn(async move { no_mac(h2, estado, geracao).await });
     });

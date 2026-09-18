@@ -2,6 +2,7 @@
 // não envia entrada e não pede permissões. Pode ser validada antes da integração.
 import Cocoa
 import ApplicationServices
+import CryptoKit
 
 func atributo(_ el: AXUIElement, _ nome: String) -> AnyObject? {
     var v: AnyObject?
@@ -42,9 +43,26 @@ let args = Array(CommandLine.arguments.dropFirst())
 if args == ["--permissoes"] {
     resposta(["acessibilidade": AXIsProcessTrusted(), "tela": telaPermitida()])
 }
-var bundle: String? = nil
-if !args.isEmpty {
-    guard args.count == 2, args[0] == "--app", !args[1].isEmpty else {
+if args == ["--soltar"] {
+    let pt=CGEvent(source:nil)?.location ?? .zero
+    CGEvent(mouseEventSource:nil,mouseType:.leftMouseUp,mouseCursorPosition:pt,mouseButton:.left)?.post(tap:.cghidEventTap)
+    for key: CGKeyCode in [0,53,36,48,49,123,124,125,126,51] { CGEvent(keyboardEventSource:nil,virtualKey:key,keyDown:false)?.post(tap:.cghidEventTap) }
+    resposta(["ok":true])
+}
+if args == ["--apps"] {
+    let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
+        .map { ["bundle": $0.bundleIdentifier!, "nome": $0.localizedName ?? $0.bundleIdentifier!] }
+    resposta(["apps": apps.sorted { $0["nome"]! < $1["nome"]! }])
+}
+var pedido: [String: Any]? = nil
+if args == ["--acao"] {
+    let dados = FileHandle.standardInput.readData(ofLength: 16385)
+    guard dados.count <= 16384, let v = try? JSONSerialization.jsonObject(with: dados) as? [String: Any] else { resposta(["ok":false,"motivo":"acao_invalida"]) }
+    pedido = v
+}
+var bundle: String? = pedido?["bundle"] as? String
+if !args.isEmpty && pedido == nil {
+    guard args.count == 2, ["--app","--explorar"].contains(args[0]), !args[1].isEmpty else {
         resposta(["ok": false, "motivo": "uso: olhar-mac [--app bundle-id | --permissoes]"])
     }
     bundle = args[1]
@@ -57,6 +75,12 @@ let app = bundle.flatMap { NSRunningApplication.runningApplications(withBundleId
     ?? (bundle == nil ? NSWorkspace.shared.frontmostApplication : nil)
 guard let app = app else { resposta(["ok": false, "motivo": "app_nao_aberto"]) }
 let pid = app.processIdentifier
+// A autorização de sessão permite trazer SOMENTE o app escolhido para frente.
+if pedido != nil || args.first == "--explorar" {
+    guard axOK && telaOK else { resposta(["ok":false,"motivo":"permissoes_necessarias"]) }
+    app.activate(options: [.activateIgnoringOtherApps]); Thread.sleep(forTimeInterval: 0.2)
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { resposta(["ok":false,"motivo":"app_nao_esta_na_frente"]) }
+}
 var saida: [String: Any] = [
     "versao": 1, "capturado_em": ISO8601DateFormatter().string(from: inicio),
     "app": ["nome": app.localizedName ?? "", "bundle": app.bundleIdentifier ?? "", "pid": pid],
@@ -118,6 +142,9 @@ saida["acessibilidade"] = ["estado": !axOK ? "sem-permissao" : raiz == nil ? "in
 if !telaOK { avisos.append("gravacao_de_tela_nao_autorizada") }
 else if senha { avisos.append("foto_omitida_campo_protegido") }
 else if let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(numero), [.boundsIgnoreFraming, .nominalResolution]) {
+    if let bytes = img.dataProvider?.data {
+        saida["impressao"] = SHA256.hash(data: bytes as Data).map { String(format: "%02x", $0) }.joined()
+    }
     let escala = min(1, 1600 / CGFloat(max(img.width, img.height)))
     let w = max(1, Int(CGFloat(img.width) * escala)), h = max(1, Int(CGFloat(img.height) * escala))
     if let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
@@ -136,4 +163,46 @@ if mudou { avisos.append("janela_mudou_durante_leitura"); saida.removeValue(forK
 saida["ok"] = !mudou && (saida["foto"] != nil || !controles.isEmpty)
 saida["avisos"] = avisos
 saida["duracao_ms"] = Int(Date().timeIntervalSince(inicio) * 1000)
+if let pedido = pedido {
+    guard !mudou, !senha, let esperado = pedido["impressao"] as? String,
+          saida["impressao"] as? String == esperado,
+          pedido["janela"] as? UInt32 == numero else { resposta(["ok":false,"motivo":"tela_mudou_observe_novamente"]) }
+    let t = pedido["tipo"] as? String ?? ""
+    func ponto(_ x: String, _ y: String) -> CGPoint? {
+        guard let a = pedido[x] as? Double, let b = pedido[y] as? Double,
+              a.isFinite, b.isFinite, a >= 0, a <= 1, b >= 0, b <= 1 else { return nil }
+        return CGPoint(x:ret.minX+a*ret.width,y:ret.minY+b*ret.height)
+    }
+    func conferir(_ pt: CGPoint) -> Bool {
+        var alvo: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),Float(pt.x),Float(pt.y),&alvo) == .success, let alvo=alvo else { return false }
+        var dono: pid_t = 0; AXUIElementGetPid(alvo,&dono)
+        return dono == pid && texto(alvo,kAXRoleAttribute) != "AXSecureTextField" && texto(alvo,kAXSubroleAttribute) != "AXSecureTextField"
+    }
+    func mouse(_ tipo: CGEventType,_ pt: CGPoint) { CGEvent(mouseEventSource:nil,mouseType:tipo,mouseCursorPosition:pt,mouseButton:.left)?.post(tap:.cghidEventTap) }
+    if t == "clique" || t == "arrastar" {
+        guard let pt=ponto("x","y"),conferir(pt) else { resposta(["ok":false,"motivo":"alvo_fora_do_app_ou_protegido"]) }
+        var fim: CGPoint? = nil
+        if t == "arrastar" { fim=ponto("x2","y2"); guard let f=fim,conferir(f) else { resposta(["ok":false,"motivo":"destino_fora_do_app"]) } }
+        mouse(.leftMouseDown,pt)
+        if let f=fim { for i in 1...12 { mouse(.leftMouseDragged,CGPoint(x:pt.x+(f.x-pt.x)*Double(i)/12,y:pt.y+(f.y-pt.y)*Double(i)/12)); Thread.sleep(forTimeInterval:0.015) } }
+        mouse(.leftMouseUp,fim ?? pt)
+    } else if t == "rolar" {
+        guard let pt=ponto("x","y"),conferir(pt),let dy=pedido["dy"] as? Int,abs(dy)<=600 else { resposta(["ok":false,"motivo":"rolagem_invalida"]) }
+        let ev=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:1,wheel1:Int32(dy),wheel2:0,wheel3:0); ev?.location=pt;ev?.post(tap:.cghidEventTap)
+    } else if t == "texto" || t == "tecla" {
+        let axApp=AXUIElementCreateApplication(pid)
+        guard let foco=elemento(atributo(axApp,kAXFocusedUIElementAttribute)),texto(foco,kAXRoleAttribute) != "AXSecureTextField",texto(foco,kAXSubroleAttribute) != "AXSecureTextField" else { resposta(["ok":false,"motivo":"foco_protegido_ou_indisponivel"]) }
+        if t == "texto" {
+            guard let valor=pedido["texto"] as? String,valor.utf16.count<=1000,!valor.contains("\n"),!valor.contains("\r") else { resposta(["ok":false,"motivo":"texto_invalido"]) }
+            let chars=Array(valor.utf16)
+            for baixo in [true,false] { let ev=CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:baixo);ev?.keyboardSetUnicodeString(stringLength:chars.count,unicodeString:chars);ev?.post(tap:.cghidEventTap) }
+        } else {
+            let teclas: [String:CGKeyCode] = ["escape":53,"enter":36,"tab":48,"espaco":49,"esquerda":123,"direita":124,"cima":126,"baixo":125,"backspace":51]
+            guard let nome=pedido["tecla"] as? String,let tecla=teclas[nome] else { resposta(["ok":false,"motivo":"tecla_nao_permitida"]) }
+            for baixo in [true,false] { CGEvent(keyboardEventSource:nil,virtualKey:tecla,keyDown:baixo)?.post(tap:.cghidEventTap) }
+        }
+    } else { resposta(["ok":false,"motivo":"acao_nao_permitida"]) }
+    resposta(["ok":true,"executada":true])
+}
 resposta(saida)

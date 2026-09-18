@@ -4,3 +4,8 @@
 identifier = "allow-olhar-computador"
 description = "Permite consultar, autorizar e parar Olhar nas janelas autorizadas."
 commands.allow = ["olhar_computador"]
+
+[[permission]]
+identifier = "allow-explorar-computador"
+description = "Sessão de aprendizado autorizada no computador."
+commands.allow = ["explorar_computador"]
