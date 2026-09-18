@@ -155,7 +155,30 @@ func elementoEm(_ x: CGFloat, _ y: CGFloat) -> AXUIElement? {
     return AXUIElementCopyElementAtPosition(sistema, Float(x), Float(y), &el) == .success ? el : nil
 }
 
+/// PID do app dono da janela comum (camada 0) mais ao topo, perguntado ao
+/// servidor de janelas na hora. Não precisa de permissão de Gravação de Tela:
+/// o dono da janela vem mesmo sem ela (o título, não).
+func pidDaJanelaDoTopo() -> pid_t? {
+    let lista = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    for w in lista where (w[kCGWindowLayer as String] as? Int) == 0 {
+        if let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != getpid() { return pid }
+    }
+    return nil
+}
+
+/// Qual app está na frente AGORA (18/09).
+///
+/// `NSWorkspace.frontmostApplication` é um valor em cache que só se atualiza
+/// com notificações do AppKit — neste processo (sem NSApplication, trabalho
+/// numa fila de fundo esperando com usleep) ele NUNCA muda. O roteiro pedia o
+/// CapCut, o CapCut vinha para a frente e o ajudante continuava vendo o app
+/// anterior: 30 s de espera e "não consegui abrir CapCut" (Cora, 18/09 12:18 e
+/// 16:17). Provado com réplica: pelo cache, nunca; pelo servidor de janelas e
+/// por `isActive`, em 250 ms. O cache fica só como última reserva.
 func appDaFrente() -> (pid: pid_t, nome: String, bundle: String)? {
+    if let pid = pidDaJanelaDoTopo(), let a = NSRunningApplication(processIdentifier: pid) {
+        return (pid, a.localizedName ?? "", a.bundleIdentifier ?? "")
+    }
     guard let a = NSWorkspace.shared.frontmostApplication else { return nil }
     return (a.processIdentifier, a.localizedName ?? "", a.bundleIdentifier ?? "")
 }
@@ -551,6 +574,9 @@ func ativarApp(bundle: String, nome: String) -> Bool {
     }
     for _ in 0..<120 {
         if let f = appDaFrente(), f.bundle == bundle { dormir(250); return true }
+        // O próprio app diz se está ativo (valor fresco, ao contrário do cache
+        // do NSWorkspace) — cobre app ativo com a janela ainda minimizada.
+        if NSRunningApplication.runningApplications(withBundleIdentifier: bundle).contains(where: { $0.isActive }) { dormir(250); return true }
         dormir(250)
     }
     return false

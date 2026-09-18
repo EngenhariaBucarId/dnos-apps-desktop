@@ -78,8 +78,20 @@ let pid = app.processIdentifier
 // A autorização de sessão permite trazer SOMENTE o app escolhido para frente.
 if pedido != nil || args.first == "--explorar" {
     guard axOK && telaOK else { resposta(["ok":false,"motivo":"permissoes_necessarias"]) }
-    app.activate(options: [.activateIgnoringOtherApps]); Thread.sleep(forTimeInterval: 0.2)
-    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { resposta(["ok":false,"motivo":"app_nao_esta_na_frente"]) }
+    app.activate(options: [.activateIgnoringOtherApps])
+    // 18/09: NSWorkspace.frontmostApplication é cache e, num processo sem
+    // NSApplication, não se atualiza — o mesmo furo que fez o roteiro acusar
+    // "não consegui abrir CapCut" com o CapCut na frente. Pergunta ao próprio
+    // app (isActive) e ao servidor de janelas, por até 2 s.
+    func naFrente() -> Bool {
+        if app.isActive { return true }
+        let lista = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        for w in lista where (w[kCGWindowLayer as String] as? Int) == 0 { return (w[kCGWindowOwnerPID as String] as? pid_t) == pid }
+        return false
+    }
+    var chegou = false
+    for _ in 0..<10 { if naFrente() { chegou = true; break }; Thread.sleep(forTimeInterval: 0.2) }
+    guard chegou else { resposta(["ok":false,"motivo":"app_nao_esta_na_frente"]) }
 }
 var saida: [String: Any] = [
     "versao": 1, "capturado_em": ISO8601DateFormatter().string(from: inicio),
