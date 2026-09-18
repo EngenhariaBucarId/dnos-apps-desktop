@@ -36,6 +36,11 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   let url=window.url().map_err(|_|"origem_indisponivel")?;
   if url.origin()!=url::Url::parse(&crate::url_da_instancia()).map_err(|_|"instancia_invalida")?.origin(){return Err("origem_nao_autorizada".into());}
  }
+ if acao=="autorizar" {
+  let h=app.clone();
+  let permissoes=tauri::async_runtime::spawn_blocking(move||ajudante(&h,&["--permissoes"],None,&AtomicBool::new(false))).await.map_err(|_|"consulta_falhou")??;
+  if permissoes["acessibilidade"]!=true||permissoes["tela"]!=true{return Err("Autorize Acessibilidade e Gravação de Tela para o dn.os antes de iniciar a exploração.".into());}
+ }
  if acao=="apps" {let h=app.clone();return tauri::async_runtime::spawn_blocking(move||ajudante(&h,&["--apps"],None,&AtomicBool::new(false))).await.map_err(|_|"consulta_falhou")?;}
  let e=app.state::<Compartilhado>();let mut g=e.lock().map_err(|_|"sessao_indisponivel")?;
  if g.sessao.as_ref().map(|s|s.ate<=agora()).unwrap_or(false){encerrar(&app,&mut g,"tempo_esgotado");}
