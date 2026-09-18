@@ -99,3 +99,10 @@ a tela nem concede uma sessão no computador.
 
 Para corrigir o menu já publicado, basta atualizar o Desktop para 0.7.14; não
 precisa repetir o deploy da executor-bridge.
+
+### Correção 0.7.15 · avatar da barra flutuante
+
+Foto e iniciais respeitam o atributo `hidden`. O `display` explícito dos dois
+elementos mantinha ambos no layout, empurrando a foto abaixo da barra e cortando
+o avatar. Conferido visualmente com e sem foto nos modos olhando, assistindo e
+atuando. É uma correção da casca: não exige Publish da web, edge ou migration.

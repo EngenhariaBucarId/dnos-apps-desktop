@@ -43,6 +43,9 @@
   .foto{width:32px;height:32px;border-radius:11px;object-fit:cover;display:block;background:var(--superficie-2)}
   .inicial{width:32px;height:32px;border-radius:11px;display:flex;align-items:center;justify-content:center;
     background:var(--superficie-2);font-weight:600;font-size:14px;color:var(--texto-fraco)}
+  /* display:flex/block prevalece sobre o hidden do navegador. Só foto OU
+     inicial pode ocupar o espaço; as duas juntas empurravam a foto para fora. */
+  .agente > [hidden]{display:none}
   .anel{position:absolute;inset:-3px;border-radius:14px;border:1.5px solid var(--primaria);opacity:.9;
     animation:pulso 1.8s ease-out infinite}
   .assistindo .anel{border-color:var(--ia)}
