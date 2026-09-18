@@ -8,3 +8,5 @@ src-tauri/gen/schemas/
 *.key.pub
 # ajudante Swift compilado no CI (fonte: src-tauri/ajudantes/gravador-mac.swift)
 src-tauri/ajudantes/dnos-gravador-mac
+
+src-tauri/ajudantes/dnos-olhar-mac

@@ -12,3 +12,6 @@ chmod +x dnos-gravador-mac
 # Identificador estável para o TCC (o linker deixava "dnos-gravador-mac-arm64").
 codesign --force --sign - --identifier ai.dnia.dnos.gravador-mac dnos-gravador-mac
 ls -la dnos-gravador-mac
+
+# Olhar é um processo separado e somente de leitura.
+bash olhar-mac/compilar.sh "$(pwd)/dnos-olhar-mac"

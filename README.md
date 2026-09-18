@@ -67,3 +67,19 @@ assinar e notarizar no Mac.
 - Não faz (fases 2 e 3, por vir): usar o Chrome da pessoa, capturar tela,
   mexer no mouse e teclado. Isso exige a ponte `dnos-node` na VPS e regras
   de segurança próprias.
+
+## Olhar meu computador (0.7.13, fase 2C-1)
+
+No macOS, o menu do chat permite autorizar um agente a consultar uma janela do
+CapCut ou Finder por cinco minutos (até 30 leituras). Barra `olhando` identifica
+o agente; Parar cancela captura e revoga o acesso. Desconectar/trocar conta também
+revoga. Não clica, não edita vídeos, não grava demonstração nem gera habilidades.
+
+O ajudante `olhar-mac/main.swift` é embutido no build junto do gravador, mas é um
+processo separado somente de leitura (deadline 10 s, saída até 3 MB). Fotos não
+passam por eventos da página; seguem direto ao relay autenticado. Permissão nativa
+fica em memória e é exclusiva com gravação/execução. Windows/Linux não oferecem
+Olhar nesta fatia. A nova web exige a bridge `maquina_contexto` e relay atualizado.
+
+Validar a release assinada em CapCut e Finder com as permissões reais do dn.os.
+O teste sintético de visão na VPS não substitui esse teste no computador.

@@ -16,6 +16,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod barra;
 mod gravador;
 mod maquina;
+mod olhar;
 mod meu_chrome;
 mod roteiro;
 mod voz;
@@ -270,6 +271,7 @@ fn atualizar_em_segundo_plano(app: tauri::AppHandle) {
 
 pub fn run() {
     let mut builder = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![olhar::olhar_computador])
         // Segunda instância (clicar no ícone de novo, ou deep link com o app
         // aberto no Windows/Linux): traz a janela e repassa os links.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -369,6 +371,7 @@ pub fn run() {
             gravador::instalar(app.handle());
             // Aprenda comigo, fase 1 (13/09): gravador da máquina toda (só macOS).
             maquina::instalar(app.handle());
+            olhar::instalar(app.handle());
             // Barra dentro do Chrome da pessoa e voz para notas.
             barra::instalar(app.handle());
             voz::instalar(app.handle());

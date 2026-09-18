@@ -192,7 +192,7 @@ pub fn reservar_uso(app: &AppHandle, modo: &'static str) -> Result<ReservaDeUso,
     {
         let mut g = estado.lock().map_err(|_| "controle do computador indisponível".to_string())?;
         if let Some(atual) = g.modo {
-            let fazendo = if atual == "gravando" { "uma gravação" } else { "uma execução" };
+            let fazendo = if atual == "gravando" { "uma gravação" } else if atual == "olhando" { "uma observação" } else { "uma execução" };
             return Err(format!("o computador já está ocupado com {fazendo}"));
         }
         g.modo = Some(modo);
@@ -217,7 +217,7 @@ fn emitir_roteiro(app: &AppHandle, v: Value) {
 /// Escreve na barra flutuante. `modo` decide o texto e quem o Parar chama:
 /// "atuando" (o agente executa) ou "assistindo" (a pessoa demonstra, 17/09).
 /// A foto sai da mesma fonte da barra do Chrome.
-fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: &str, sub: String, ouvindo: bool) {
+pub(crate) fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: &str, sub: String, ouvindo: bool) {
     let foto = if agente.is_empty() { None } else { crate::barra::foto_do_agente(app, agente) };
     let estado = json!({
         "modo": modo, "agente": agente, "titulo": titulo, "sub": sub, "ouvindo": ouvindo, "foto": foto,
@@ -229,7 +229,7 @@ fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: &str, sub: 
 }
 
 /// Barra flutuante por cima de tudo: "<agente> está usando o seu computador · passo 3 de 9" + Parar.
-fn mostrar_barra(app: &AppHandle) {
+pub(crate) fn mostrar_barra(app: &AppHandle) {
     if app.get_webview_window("barra-mac").is_some() { return; }
     let _ = tauri::WebviewWindowBuilder::new(app, "barra-mac", tauri::WebviewUrl::App("barra-mac.html".into()))
         .title("dn.os")
@@ -249,7 +249,7 @@ fn mostrar_barra(app: &AppHandle) {
         }
     }
 }
-fn esconder_barra(app: &AppHandle) {
+pub(crate) fn esconder_barra(app: &AppHandle) {
     if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
         if let Ok(mut g) = e.lock() { g.barra_atual = None; }
     }
@@ -335,10 +335,11 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                 espera = 5;
                 let (mut tx, mut rx) = ws.split();
                 let versao = app.package_info().version.to_string();
-                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao }).to_string().into())).await.is_err() { continue; }
+                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao, "capacidades": ["olhar-v1"] }).to_string().into())).await.is_err() { continue; }
                 meu_chrome::registrar(&app, "no-mac: conectado ao relay");
                 // Andamento do roteiro → relay (só os eventos com id, que vieram de lá).
                 let (para_relay, mut fila) = mpsc::unbounded_channel::<String>();
+                let para_olhar = para_relay.clone();
                 let ouvinte = app.listen_any("dnos://roteiro", move |ev| {
                     if let Ok(v) = serde_json::from_str::<Value>(ev.payload()) {
                         if v["modo"] == "mac" && v["id"].as_str().map(|s| !s.is_empty()).unwrap_or(false) {
@@ -350,12 +351,14 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                 let mut pulso = tokio::time::interval(std::time::Duration::from_secs(25));
                 loop {
                     tokio::select! {
-                        Some(m) = fila.recv() => { if tx.send(Message::Text(m.into())).await.is_err() { break; } }
+                        Some(m) = fila.recv() => { if crate::olhar::pode_enviar(&app, &m) && tx.send(Message::Text(m.into())).await.is_err() { break; } }
                         _ = pulso.tick() => { if tx.send(Message::Text(json!({ "t": "ping" }).to_string().into())).await.is_err() { break; } }
                         msg = rx.next() => {
                             match msg {
                                 Some(Ok(Message::Text(t))) => {
                                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                                        if v["t"] == "pronto-mac" { crate::olhar::conectar(&app, geracao, para_olhar.clone()); }
+                                        if v["t"] == "olhar" || v["t"] == "sessao-fim" { crate::olhar::receber(&app, geracao, &v); }
                                         if v["t"] == "roteiro" {
                                             meu_chrome::registrar(&app, &format!("no-mac: roteiro {} ({})", v["id"].as_str().unwrap_or("?").chars().take(8).collect::<String>(), v["nome"].as_str().unwrap_or("")));
                                             let mut pedido = v.clone(); pedido["modo"] = json!("mac");
@@ -369,8 +372,9 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                             }
                         }
                     }
-                    if estado.lock().map(|g| g.geracao != geracao).unwrap_or(true) { let _ = tx.close().await; app.unlisten(ouvinte); return; }
+                    if estado.lock().map(|g| g.geracao != geracao).unwrap_or(true) { crate::olhar::desconectar(&app, geracao); let _ = tx.close().await; app.unlisten(ouvinte); return; }
                 }
+                crate::olhar::desconectar(&app, geracao);
                 app.unlisten(ouvinte);
                 meu_chrome::registrar(&app, "no-mac: conexão caiu, religando");
             }
@@ -410,6 +414,7 @@ pub fn instalar(app: &AppHandle) {
             }
             Err(_) => return,
         };
+        crate::olhar::invalidar(&h);
         let h2 = h.clone();
         tauri::async_runtime::spawn(async move { no_mac(h2, estado, geracao).await });
     });
