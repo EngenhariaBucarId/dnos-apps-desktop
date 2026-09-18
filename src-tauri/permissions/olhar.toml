@@ -1,0 +1,6 @@
+# Registrar invoke_handler não basta para a página remota: o comando precisa
+# de uma permissão explícita. O handler ainda valida janela e consentimento.
+[[permission]]
+identifier = "allow-olhar-computador"
+description = "Permite consultar, autorizar e parar Olhar nas janelas autorizadas."
+commands.allow = ["olhar_computador"]

@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "olhar",
+  "description": "Olhar no chat publicado e Parar na barra local. O handler restringe a barra à ação parar e exige consentimento no chat.",
+  "windows": ["main", "barra-mac"],
+  "local": true,
+  "remote": { "urls": ["https://dnos.dnia.ai/*"] },
+  "permissions": ["allow-olhar-computador"]
+}

@@ -17,6 +17,8 @@ mod barra;
 mod gravador;
 mod maquina;
 mod olhar;
+#[cfg(test)]
+mod olhar_acl;
 mod meu_chrome;
 mod roteiro;
 mod voz;
@@ -269,6 +271,8 @@ fn atualizar_em_segundo_plano(app: tauri::AppHandle) {
     });
 }
 
+fn contexto<R: tauri::Runtime>() -> tauri::Context<R> { tauri::generate_context!() }
+
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![olhar::olhar_computador])
@@ -418,7 +422,7 @@ pub fn run() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(contexto())
         .expect("erro ao iniciar o dn.os Desktop")
         .run(|app, evento| {
             // Fechou o app: o Chrome do dn.os fecha junto e a ponte cai.

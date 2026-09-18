@@ -83,3 +83,19 @@ Olhar nesta fatia. A nova web exige a bridge `maquina_contexto` e relay atualiza
 
 Validar a release assinada em CapCut e Finder com as permissões reais do dn.os.
 O teste sintético de visão na VPS não substitui esse teste no computador.
+
+### Correção 0.7.14 · menu Olhar não aparecia
+
+A 0.7.13 registrava o comando nativo, mas não concedia a capability exigida pelo
+Tauri para a origem remota `https://dnos.dnia.ai`. A consulta de estado era
+recusada antes de chegar ao handler, e o frontend escondia o item ao receber erro.
+A 0.7.14 concede somente esse comando às janelas main/barra-mac. O handler
+continua restringindo autorização ao chat e Parar à barra.
+
+Regressão em `src-tauri/src/olhar_acl.rs`: usa o roteador IPC do Tauri com o
+contexto real de produção; verifica acesso pelo chat e barra e recusa outra
+origem/janela. Esse teste falha na 0.7.13 e passa com a capability. Não captura
+a tela nem concede uma sessão no computador.
+
+Para corrigir o menu já publicado, basta atualizar o Desktop para 0.7.14; não
+precisa repetir o deploy da executor-bridge.
