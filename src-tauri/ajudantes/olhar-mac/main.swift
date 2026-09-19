@@ -102,23 +102,37 @@ var saida: [String: Any] = [
 // Seleciona uma única janela. A foto e a árvore devem descrever a MESMA janela.
 let janelas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
     .filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && ($0[kCGWindowLayer as String] as? Int) == 0 }
-// 18/09: a primeira da lista é a mais à frente, e no CapCut era um painel
-// flutuante de 183×88 ("EditPilot") por cima da janela do projeto. Ordem:
-// a janela principal que o próprio app declara (AX); senão a maior que não
-// seja painel pequeno; senão a da frente.
+// Qual janela do app ler (18–19/09):
+// 1) a janela com foco, se não for painel pequeno — é onde a pessoa/agente
+//    está agindo; o diálogo de Exportar do CapCut é uma janela separada e com
+//    foco, e ler só a principal deixava o agente cego para ele;
+// 2) a janela grande (≥300×200) mais à frente — o painel flutuante "EditPilot"
+//    de 183×88 do CapCut fica por cima e não conta; 3) a principal; 4) a da frente.
 func limitesDe(_ w: [String: Any]) -> CGRect? {
     (w[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
 }
-let principalAX: CGRect? = axOK ? {
-    let axApp = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(axApp, 0.15)
-    return atributo(axApp, kAXMainWindowAttribute).flatMap { retangulo($0 as! AXUIElement) }
+func grande(_ r: CGRect) -> Bool { r.width >= 300 && r.height >= 200 }
+func mesma(_ a: CGRect, _ b: CGRect) -> Bool { abs(a.minX - b.minX) < 2 && abs(a.minY - b.minY) < 2 && abs(a.width - b.width) < 2 && abs(a.height - b.height) < 2 }
+let axDoApp: AXUIElement? = axOK ? {
+    let a = AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(a, 0.15); return a
 }() : nil
-let janelaEscolhida: [String: Any]? =
-    principalAX.flatMap { m in janelas.first { w in limitesDe(w).map { abs($0.minX - m.minX) < 2 && abs($0.minY - m.minY) < 2 && abs($0.width - m.width) < 2 && abs($0.height - m.height) < 2 } ?? false } }
-    ?? janelas.filter { w in limitesDe(w).map { $0.width >= 300 && $0.height >= 200 } ?? false }
-        .max { (limitesDe($0).map { $0.width * $0.height } ?? 0) < (limitesDe($1).map { $0.width * $0.height } ?? 0) }
-    ?? janelas.first
+func janelaAX(_ atr: String) -> [String: Any]? {
+    guard let a = axDoApp, let r = atributo(a, atr).flatMap({ retangulo($0 as! AXUIElement) }) else { return nil }
+    return janelas.first { w in limitesDe(w).map { mesma($0, r) } ?? false }
+}
+func escolherJanela() -> [String: Any]? {
+    if let f = janelaAX(kAXFocusedWindowAttribute), let r = limitesDe(f), grande(r) { return f }
+    // A lista vem da frente para trás: a primeira grande é o diálogo, se houver.
+    if let frente = janelas.first(where: { limitesDe($0).map(grande) ?? false }) { return frente }
+    return janelaAX(kAXMainWindowAttribute) ?? janelas.first
+}
+let janelaEscolhida: [String: Any]? = escolherJanela()
+// O agente precisa saber que há outras janelas (diálogo, painel) além da lida.
+saida["janelas_do_app"] = janelas.prefix(8).map { w -> [String: Any] in
+    let r = limitesDe(w) ?? .zero
+    return ["titulo": w[kCGWindowName as String] as? String ?? "", "w": Int(r.width), "h": Int(r.height),
+            "lida": (w[kCGWindowNumber as String] as? UInt32) == (janelaEscolhida?[kCGWindowNumber as String] as? UInt32)]
+}
 guard let janela = janelaEscolhida,
       let numero = janela[kCGWindowNumber as String] as? UInt32,
       let limites = janela[kCGWindowBounds as String] as? [String: Any],
