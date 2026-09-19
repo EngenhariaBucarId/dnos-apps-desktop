@@ -102,7 +102,24 @@ var saida: [String: Any] = [
 // Seleciona uma única janela. A foto e a árvore devem descrever a MESMA janela.
 let janelas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
     .filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && ($0[kCGWindowLayer as String] as? Int) == 0 }
-guard let janela = janelas.first,
+// 18/09: a primeira da lista é a mais à frente, e no CapCut era um painel
+// flutuante de 183×88 ("EditPilot") por cima da janela do projeto. Ordem:
+// a janela principal que o próprio app declara (AX); senão a maior que não
+// seja painel pequeno; senão a da frente.
+func limitesDe(_ w: [String: Any]) -> CGRect? {
+    (w[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+}
+let principalAX: CGRect? = axOK ? {
+    let axApp = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(axApp, 0.15)
+    return atributo(axApp, kAXMainWindowAttribute).flatMap { retangulo($0 as! AXUIElement) }
+}() : nil
+let janelaEscolhida: [String: Any]? =
+    principalAX.flatMap { m in janelas.first { w in limitesDe(w).map { abs($0.minX - m.minX) < 2 && abs($0.minY - m.minY) < 2 && abs($0.width - m.width) < 2 && abs($0.height - m.height) < 2 } ?? false } }
+    ?? janelas.filter { w in limitesDe(w).map { $0.width >= 300 && $0.height >= 200 } ?? false }
+        .max { (limitesDe($0).map { $0.width * $0.height } ?? 0) < (limitesDe($1).map { $0.width * $0.height } ?? 0) }
+    ?? janelas.first
+guard let janela = janelaEscolhida,
       let numero = janela[kCGWindowNumber as String] as? UInt32,
       let limites = janela[kCGWindowBounds as String] as? [String: Any],
       let ret = CGRect(dictionaryRepresentation: limites as CFDictionary), ret.width > 0, ret.height > 0 else {

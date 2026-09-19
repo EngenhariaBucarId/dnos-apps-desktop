@@ -125,7 +125,11 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   let passo=&v["passo"];
   if !validar_passo(passo){return Err("passo_invalido".into());}
   let (ref id,ts,ref leitura)=s.ultima.as_ref().ok_or("observe_antes_de_agir")?;
-  if v["observacao"]!=*id||agora()-ts>120_000{return Err("observacao_expirada".into());}
+  // Aprovada pela pessoa, a observação vale até 10 min: o ajudante só age se a
+  // janela estiver pixel a pixel igual à observada (impressão), então esperar
+  // a aprovação não abre brecha. Antes, aprovar depois de 2 min falhava calado.
+  let validade=if aprovada{600_000}else{120_000};
+  if v["observacao"]!=*id||agora()-ts>validade{return Err("observacao_expirada".into());}
   if !aprovada&&precisa_aprovar(s,passo){s.pendente=Some(v);barra(app,s);return Ok(());}
   let mut p=passo.clone();p["bundle"]=json!(s.bundle);p["impressao"]=leitura["impressao"].clone();p["janela"]=leitura["janela"]["numero"].clone();entrada=Some(p);
   s.ultima=None;s.acoes+=1;
