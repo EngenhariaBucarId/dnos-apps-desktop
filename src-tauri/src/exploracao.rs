@@ -90,7 +90,7 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
  },_=>return Err("acao_desconhecida".into())}
  Ok(estado(&g))
 }
-const TECLAS_NOMEADAS:&[&str]=&["escape","enter","tab","espaco","esquerda","direita","cima","baixo","backspace","delete","home","end","pageup","pagedown","f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12"];
+const TECLAS_NOMEADAS:&[&str]=&["escape","enter","tab","espaco","esquerda","direita","cima","baixo","backspace","delete","home","end","pageup","pagedown","f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12","down","up","left","right","return","space","esc","pgup","pgdown"];
 fn validar_passo(p:&Value)->bool {
  let tipo=p["tipo"].as_str().unwrap_or("");
  if !["clique","passar","arrastar","rolar","texto","tecla","menu","esperar"].contains(&tipo)||p["descricao"].as_str().map(|s|s.is_empty()||s.len()>400).unwrap_or(true){return false;}
@@ -105,7 +105,7 @@ fn validar_passo(p:&Value)->bool {
   "rolar"=>coord("x")&&coord("y")&&[&p["dy"],&p["dx"]].iter().all(|v|v.is_null()||v.as_i64().map(|n|(-600..=600).contains(&n)).unwrap_or(false))&&!(p["dy"].is_null()&&p["dx"].is_null()),
   "texto"=>p["texto"].as_str().map(|s|s.chars().count()<=1000&&!s.chars().any(char::is_control)).unwrap_or(false),
   "tecla"=>tecla_ok(&p["tecla"].as_str().unwrap_or("").to_lowercase())&&mods_ok,
-  "menu"=>p["caminho"].as_array().map(|c|(1..=4).contains(&c.len())&&c.iter().all(|x|x.as_str().map(|s|!s.trim().is_empty()&&s.len()<=80).unwrap_or(false))).unwrap_or(false)&&(p["listar"].is_null()||p["listar"].is_boolean()),
+  "menu"=>p["caminho"].as_array().map(|c|(if p["listar"]==true{0}else{1}..=4).contains(&c.len())&&c.iter().all(|x|x.as_str().map(|s|!s.trim().is_empty()&&s.len()<=80).unwrap_or(false))).unwrap_or(false)&&(p["listar"].is_null()||p["listar"].is_boolean()),
   "esperar"=>p["ms"].as_u64().map(|n|(100..=10_000).contains(&n)).unwrap_or(false),
   _=>false}
 }
@@ -237,6 +237,7 @@ pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(
   assert!(!ok(json!({"tipo":"tecla","descricao":"x","risco":"normal","tecla":"b","mods":["hyper"]})));
   assert!(!ok(json!({"tipo":"tecla","descricao":"x","risco":"normal","tecla":"rm -rf"})));
   assert!(!ok(json!({"tipo":"menu","descricao":"x","risco":"normal","caminho":[]})));
+  assert!(ok(json!({"tipo":"menu","descricao":"menus do topo","risco":"normal","caminho":[],"listar":true})));
   assert!(!ok(json!({"tipo":"esperar","descricao":"x","risco":"normal","ms":60000})));
  }
  #[test]fn nao_oferece_terminais_ou_cofres(){assert!(app_permitido("com.lemon.lvoverseas"));assert!(!app_permitido("com.apple.Terminal"));assert!(!app_permitido("com.apple.keychainaccess"));}

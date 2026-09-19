@@ -99,6 +99,24 @@ var saida: [String: Any] = [
     "permissoes": ["acessibilidade": axOK, "tela": telaOK],
     "somente_leitura": true,
 ]
+// 19/09: lista suspensa, menu e dica do app são janelas próprias (outra camada)
+// por cima da lida; capturar só a janela deixava o agente sem ver a lista de
+// resoluções do Exportar do CapCut. Compõe TODAS as janelas do app visíveis
+// sobre o retângulo da janela lida (só do app: nada de outros programas).
+func capturarComPopups(_ numero: UInt32, _ ret: CGRect) -> CGImage? {
+    let todas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
+        .filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && (($0[kCGWindowLayer as String] as? Int) ?? 0) >= 0 }
+        .filter { w in (w[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }.map { $0.intersects(ret) } ?? false }
+        .compactMap { $0[kCGWindowNumber as String] as? UInt32 }
+    let ids = todas.contains(numero) ? todas : [numero] + todas
+    let ptr = UnsafeMutablePointer<UnsafeRawPointer?>.allocate(capacity: ids.count)
+    defer { ptr.deallocate() }
+    for (i, id) in ids.enumerated() { ptr[i] = UnsafeRawPointer(bitPattern: UInt(id)) }
+    if let arr = CFArrayCreate(kCFAllocatorDefault, ptr, ids.count, nil),
+       let img = CGImage(windowListFromArrayScreenBounds: ret, windowArray: arr, imageOption: [.boundsIgnoreFraming, .nominalResolution]),
+       img.width > 1 { return img }
+    return CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(numero), [.boundsIgnoreFraming, .nominalResolution])
+}
 // Seleciona uma única janela. A foto e a árvore devem descrever a MESMA janela.
 let janelas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
     .filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && ($0[kCGWindowLayer as String] as? Int) == 0 }
@@ -152,7 +170,7 @@ if axOK {
         return abs(r.minX - ret.minX) < 2 && abs(r.minY - ret.minY) < 2 && abs(r.width - ret.width) < 2 && abs(r.height - ret.height) < 2
     }
     if let raiz = raiz {
-        let limite = Date().addingTimeInterval(2)
+        let limite = Date().addingTimeInterval(pedido == nil ? 2 : 0.7)
         var fila: [(AXUIElement, Int?, Int)] = [(raiz, nil, 0)], vistos: [AXUIElement] = []
         var indice = 0
         while indice < fila.count {
@@ -184,7 +202,7 @@ if axOK {
 saida["acessibilidade"] = ["estado": !axOK ? "sem-permissao" : raiz == nil ? "indisponivel" : truncada ? "parcial" : "ok", "truncada": truncada, "controles": controles]
 if !telaOK { avisos.append("gravacao_de_tela_nao_autorizada") }
 else if senha { avisos.append("foto_omitida_campo_protegido") }
-else if let img = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(numero), [.boundsIgnoreFraming, .nominalResolution]) {
+else if let img = capturarComPopups(numero, ret) {
     if let bytes = img.dataProvider?.data {
         saida["impressao"] = SHA256.hash(data: bytes as Data).map { String(format: "%02x", $0) }.joined()
     }
@@ -242,6 +260,7 @@ if let pedido = pedido {
         "i":34,"p":35,"l":37,"j":38,"'":39,"k":40,";":41,"\\":42,",":43,"/":44,"n":45,"m":46,".":47,"`":50,
         "enter":36,"tab":48,"espaco":49,"backspace":51,"escape":53,"delete":117,"home":115,"end":119,"pageup":116,"pagedown":121,
         "esquerda":123,"direita":124,"baixo":125,"cima":126,
+        "down":125,"up":126,"left":123,"right":124,"return":36,"space":49,"esc":53,"pgup":116,"pgdown":121,
         "f1":122,"f2":120,"f3":99,"f4":118,"f5":96,"f6":97,"f7":98,"f8":100,"f9":101,"f10":109,"f11":103,"f12":111]
     if t == "clique" || t == "passar" {
         guard let pt=ponto("x","y"),conferir(pt) else { resposta(["ok":false,"motivo":"alvo_fora_do_app_ou_protegido"]) }
@@ -299,7 +318,9 @@ if let pedido = pedido {
     } else if t == "menu" {
         // Menus do topo pelo próprio app (acessibilidade), sem coordenada: a barra
         // de menus fica fora da janela. Sem o menu da Apple, nunca "Encerrar".
-        guard let caminho = pedido["caminho"] as? [String], (1...4).contains(caminho.count) else { resposta(["ok":false,"motivo":"menu_invalido"]) }
+        // caminho vazio + listar = os menus do topo (Arquivo, Editar, …).
+        let listar = pedido["listar"] as? Bool == true
+        guard let caminho = pedido["caminho"] as? [String], (listar ? 0 : 1)...4 ~= caminho.count else { resposta(["ok":false,"motivo":"menu_invalido"]) }
         let axApp=AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(axApp, 1.0)
         guard let barra=elemento(atributo(axApp,kAXMenuBarAttribute)) else { resposta(["ok":false,"motivo":"menu_indisponivel"]) }
         func filhos(_ e: AXUIElement) -> [AXUIElement] { atributo(e,kAXChildrenAttribute) as? [AXUIElement] ?? [] }
@@ -317,8 +338,11 @@ if let pedido = pedido {
             atual = item
             itens = filhos(item).flatMap { filhos($0) }
         }
+        if listar && caminho.isEmpty {
+            resposta(["ok":true,"executada":false,"menu":itens.map{texto($0,kAXTitleAttribute)}.filter{!$0.isEmpty}.prefix(60).map{$0}])
+        }
         guard let final = atual else { resposta(["ok":false,"motivo":"menu_invalido"]) }
-        if pedido["listar"] as? Bool == true {
+        if listar {
             resposta(["ok":true,"executada":false,"menu":itens.map{texto($0,kAXTitleAttribute)}.filter{!$0.isEmpty}.prefix(60).map{$0}])
         }
         if let ativo = atributo(final,kAXEnabledAttribute) as? Bool, !ativo { resposta(["ok":false,"motivo":"menu_desativado"]) }
