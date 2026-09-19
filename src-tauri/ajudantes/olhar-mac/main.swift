@@ -193,9 +193,14 @@ saida["ok"] = !mudou && (saida["foto"] != nil || !controles.isEmpty)
 saida["avisos"] = avisos
 saida["duracao_ms"] = Int(Date().timeIntervalSince(inicio) * 1000)
 if let pedido = pedido {
-    guard !mudou, !senha, let esperado = pedido["impressao"] as? String,
-          saida["impressao"] as? String == esperado,
-          pedido["janela"] as? UInt32 == numero else { resposta(["ok":false,"motivo":"tela_mudou_observe_novamente"]) }
+    // Autônomo (19/09): a janela precisa ser a mesma e sem campo de senha, mas
+    // não pixel a pixel — num editor de vídeo a tela muda sozinha o tempo todo.
+    // Acompanhado continua exigindo a impressão idêntica à observação aprovada.
+    let autonomo = pedido["autonomo"] as? Bool == true
+    let impressaoConfere = (pedido["impressao"] as? String).map { saida["impressao"] as? String == $0 } ?? false
+    guard !mudou, !senha, pedido["janela"] as? UInt32 == numero, autonomo || impressaoConfere else {
+        resposta(["ok":false,"motivo":"tela_mudou_observe_novamente"])
+    }
     let t = pedido["tipo"] as? String ?? ""
     func ponto(_ x: String, _ y: String) -> CGPoint? {
         guard let a = pedido[x] as? Double, let b = pedido[y] as? Double,
@@ -211,34 +216,99 @@ if let pedido = pedido {
     // Mesmo gesto do roteiro (gravador-mac `clicarEm`), que clica no CapCut: cursor
     // chega antes, e o botão desce e sobe com intervalo e contagem de clique.
     // 18/09: descer+subir no mesmo instante só realçava o Exportar, sem abrir nada.
-    func mouse(_ tipo: CGEventType,_ pt: CGPoint) {
-        guard let ev = CGEvent(mouseEventSource:nil,mouseType:tipo,mouseCursorPosition:pt,mouseButton:.left) else { return }
-        if tipo == .leftMouseDown || tipo == .leftMouseUp { ev.setIntegerValueField(.mouseEventClickState, value: 1) }
+    func mouse(_ tipo: CGEventType,_ pt: CGPoint, botao: CGMouseButton = .left, contagem: Int64 = 1) {
+        guard let ev = CGEvent(mouseEventSource:nil,mouseType:tipo,mouseCursorPosition:pt,mouseButton:botao) else { return }
+        if tipo != .mouseMoved && tipo != .leftMouseDragged { ev.setIntegerValueField(.mouseEventClickState, value: contagem) }
         ev.post(tap:.cghidEventTap)
     }
-    if t == "clique" || t == "arrastar" {
+    func esperar(_ s: Double) { Thread.sleep(forTimeInterval: s) }
+    let codigos: [String: CGKeyCode] = [
+        "a":0,"s":1,"d":2,"f":3,"h":4,"g":5,"z":6,"x":7,"c":8,"v":9,"b":11,"q":12,"w":13,"e":14,"r":15,"y":16,"t":17,
+        "1":18,"2":19,"3":20,"4":21,"6":22,"5":23,"=":24,"9":25,"7":26,"-":27,"8":28,"0":29,"]":30,"o":31,"u":32,"[":33,
+        "i":34,"p":35,"l":37,"j":38,"'":39,"k":40,";":41,"\\":42,",":43,"/":44,"n":45,"m":46,".":47,"`":50,
+        "enter":36,"tab":48,"espaco":49,"backspace":51,"escape":53,"delete":117,"home":115,"end":119,"pageup":116,"pagedown":121,
+        "esquerda":123,"direita":124,"baixo":125,"cima":126,
+        "f1":122,"f2":120,"f3":99,"f4":118,"f5":96,"f6":97,"f7":98,"f8":100,"f9":101,"f10":109,"f11":103,"f12":111]
+    if t == "clique" || t == "passar" {
         guard let pt=ponto("x","y"),conferir(pt) else { resposta(["ok":false,"motivo":"alvo_fora_do_app_ou_protegido"]) }
-        var fim: CGPoint? = nil
-        if t == "arrastar" { fim=ponto("x2","y2"); guard let f=fim,conferir(f) else { resposta(["ok":false,"motivo":"destino_fora_do_app"]) } }
-        mouse(.mouseMoved,pt); Thread.sleep(forTimeInterval:0.06)
-        mouse(.leftMouseDown,pt); Thread.sleep(forTimeInterval:0.04)
-        if let f=fim { for i in 1...12 { mouse(.leftMouseDragged,CGPoint(x:pt.x+(f.x-pt.x)*Double(i)/12,y:pt.y+(f.y-pt.y)*Double(i)/12)); Thread.sleep(forTimeInterval:0.015) } }
-        mouse(.leftMouseUp,fim ?? pt)
+        mouse(.mouseMoved,pt); esperar(0.06)
+        if t == "clique" {
+            let direito = pedido["botao"] as? String == "direito"
+            let (baixo, cima, botao): (CGEventType, CGEventType, CGMouseButton) = direito ? (.rightMouseDown,.rightMouseUp,.right) : (.leftMouseDown,.leftMouseUp,.left)
+            let vezes = (pedido["cliques"] as? Int) == 2 ? 2 : 1
+            for n in 1...vezes {
+                mouse(baixo,pt,botao:botao,contagem:Int64(n)); esperar(0.04)
+                mouse(cima,pt,botao:botao,contagem:Int64(n)); if vezes == 2 { esperar(0.09) }
+            }
+        }
+    } else if t == "arrastar" {
+        guard let pt=ponto("x","y"),conferir(pt) else { resposta(["ok":false,"motivo":"alvo_fora_do_app_ou_protegido"]) }
+        guard let f=ponto("x2","y2"),conferir(f) else { resposta(["ok":false,"motivo":"destino_fora_do_app"]) }
+        mouse(.mouseMoved,pt); esperar(0.06)
+        mouse(.leftMouseDown,pt); esperar(0.08)
+        for i in 1...20 { mouse(.leftMouseDragged,CGPoint(x:pt.x+(f.x-pt.x)*Double(i)/20,y:pt.y+(f.y-pt.y)*Double(i)/20)); esperar(0.015) }
+        esperar(0.05); mouse(.leftMouseUp,f)
     } else if t == "rolar" {
-        guard let pt=ponto("x","y"),conferir(pt),let dy=pedido["dy"] as? Int,abs(dy)<=600 else { resposta(["ok":false,"motivo":"rolagem_invalida"]) }
-        let ev=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:1,wheel1:Int32(dy),wheel2:0,wheel3:0); ev?.location=pt;ev?.post(tap:.cghidEventTap)
+        guard let pt=ponto("x","y"),conferir(pt) else { resposta(["ok":false,"motivo":"rolagem_invalida"]) }
+        let dy = pedido["dy"] as? Int ?? 0, dx = pedido["dx"] as? Int ?? 0
+        guard abs(dy)<=600, abs(dx)<=600, dx != 0 || dy != 0 else { resposta(["ok":false,"motivo":"rolagem_invalida"]) }
+        mouse(.mouseMoved,pt); esperar(0.03)
+        let ev=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:2,wheel1:Int32(dy),wheel2:Int32(dx),wheel3:0); ev?.location=pt;ev?.post(tap:.cghidEventTap)
     } else if t == "texto" || t == "tecla" {
         let axApp=AXUIElementCreateApplication(pid)
-        guard let foco=elemento(atributo(axApp,kAXFocusedUIElementAttribute)),texto(foco,kAXRoleAttribute) != "AXSecureTextField",texto(foco,kAXSubroleAttribute) != "AXSecureTextField" else { resposta(["ok":false,"motivo":"foco_protegido_ou_indisponivel"]) }
+        // Sem foco (timeline, canvas) o atalho vai para o app, que já está na
+        // frente; só não digita nem aperta tecla com campo de senha em foco.
+        if let foco=elemento(atributo(axApp,kAXFocusedUIElementAttribute)),
+           texto(foco,kAXRoleAttribute) == "AXSecureTextField" || texto(foco,kAXSubroleAttribute) == "AXSecureTextField" {
+            resposta(["ok":false,"motivo":"foco_protegido"])
+        }
         if t == "texto" {
             guard let valor=pedido["texto"] as? String,valor.utf16.count<=1000,!valor.contains("\n"),!valor.contains("\r") else { resposta(["ok":false,"motivo":"texto_invalido"]) }
             let chars=Array(valor.utf16)
             for baixo in [true,false] { let ev=CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:baixo);ev?.keyboardSetUnicodeString(stringLength:chars.count,unicodeString:chars);ev?.post(tap:.cghidEventTap) }
         } else {
-            let teclas: [String:CGKeyCode] = ["escape":53,"enter":36,"tab":48,"espaco":49,"esquerda":123,"direita":124,"cima":126,"baixo":125,"backspace":51]
-            guard let nome=pedido["tecla"] as? String,let tecla=teclas[nome] else { resposta(["ok":false,"motivo":"tecla_nao_permitida"]) }
-            for baixo in [true,false] { CGEvent(keyboardEventSource:nil,virtualKey:tecla,keyDown:baixo)?.post(tap:.cghidEventTap) }
+            guard let nome=(pedido["tecla"] as? String)?.lowercased(),let tecla=codigos[nome] else { resposta(["ok":false,"motivo":"tecla_nao_permitida"]) }
+            let mods = Set(pedido["mods"] as? [String] ?? [])
+            // Nunca: sair do app, trocar de app, Spotlight, forçar encerrar, sair da conta.
+            let bloqueado = mods.contains("cmd") && (["q","tab","espaco","h"].contains(nome) || (mods.contains("alt") && nome == "escape") || (mods.contains("shift") && nome == "q"))
+            guard !bloqueado else { resposta(["ok":false,"motivo":"atalho_bloqueado"]) }
+            var flags = CGEventFlags()
+            if mods.contains("cmd") { flags.insert(.maskCommand) }
+            if mods.contains("shift") { flags.insert(.maskShift) }
+            if mods.contains("alt") { flags.insert(.maskAlternate) }
+            if mods.contains("ctrl") { flags.insert(.maskControl) }
+            for baixo in [true,false] {
+                let ev=CGEvent(keyboardEventSource:nil,virtualKey:tecla,keyDown:baixo); ev?.flags=flags; ev?.post(tap:.cghidEventTap)
+                if baixo { esperar(0.03) }
+            }
         }
+    } else if t == "menu" {
+        // Menus do topo pelo próprio app (acessibilidade), sem coordenada: a barra
+        // de menus fica fora da janela. Sem o menu da Apple, nunca "Encerrar".
+        guard let caminho = pedido["caminho"] as? [String], (1...4).contains(caminho.count) else { resposta(["ok":false,"motivo":"menu_invalido"]) }
+        let axApp=AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(axApp, 1.0)
+        guard let barra=elemento(atributo(axApp,kAXMenuBarAttribute)) else { resposta(["ok":false,"motivo":"menu_indisponivel"]) }
+        func filhos(_ e: AXUIElement) -> [AXUIElement] { atributo(e,kAXChildrenAttribute) as? [AXUIElement] ?? [] }
+        func limpo(_ s: String) -> String { s.lowercased().replacingOccurrences(of:"…",with:"").replacingOccurrences(of:"...",with:"").trimmingCharacters(in:.whitespaces) }
+        var itens = Array(filhos(barra).dropFirst())
+        var atual: AXUIElement? = nil
+        for nome in caminho {
+            let alvo = limpo(nome)
+            guard let item = itens.first(where:{limpo(texto($0,kAXTitleAttribute)) == alvo}) ?? itens.first(where:{ !alvo.isEmpty && limpo(texto($0,kAXTitleAttribute)).hasPrefix(alvo) }) else {
+                let opcoes = itens.map{texto($0,kAXTitleAttribute)}.filter{!$0.isEmpty}.prefix(40).joined(separator:" | ")
+                resposta(["ok":false,"motivo":"menu_nao_encontrado:\(nome) · opções: \(opcoes)"])
+            }
+            let tit = limpo(texto(item,kAXTitleAttribute))
+            if ["encerrar","quit","sair do","desligar","reiniciar","log out","terminar sessão","forçar"].contains(where:{tit.hasPrefix($0)}) { resposta(["ok":false,"motivo":"menu_bloqueado"]) }
+            atual = item
+            itens = filhos(item).flatMap { filhos($0) }
+        }
+        guard let final = atual else { resposta(["ok":false,"motivo":"menu_invalido"]) }
+        if pedido["listar"] as? Bool == true {
+            resposta(["ok":true,"executada":false,"menu":itens.map{texto($0,kAXTitleAttribute)}.filter{!$0.isEmpty}.prefix(60).map{$0}])
+        }
+        if let ativo = atributo(final,kAXEnabledAttribute) as? Bool, !ativo { resposta(["ok":false,"motivo":"menu_desativado"]) }
+        guard AXUIElementPerformAction(final,kAXPressAction as CFString) == .success else { resposta(["ok":false,"motivo":"menu_nao_respondeu"]) }
     } else { resposta(["ok":false,"motivo":"acao_nao_permitida"]) }
     resposta(["ok":true,"executada":true])
 }

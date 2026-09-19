@@ -30,7 +30,7 @@ fn rotulo_fase(fase:&str)->&str {match fase {
  "interpretando"=>"Interpretando a imagem", "agindo"=>"Executando uma ação", "decidindo"=>"Analisando o próximo passo",
  _=>"Sessão autorizada"}}
 fn barra(app:&AppHandle,s:&Sessao) {
- let sub=if let Some(p)=&s.pendente {format!("Aprovar: {}",p["passo"]["descricao"].as_str().unwrap_or("próxima ação"))} else {format!("{} · {} ações solicitadas (limite 40)",rotulo_fase(&s.fase),s.acoes)};
+ let sub=if let Some(p)=&s.pendente {format!("Aprovar: {}",p["passo"]["descricao"].as_str().unwrap_or("próxima ação"))} else {format!("{} · {} ações (limite 300)",rotulo_fase(&s.fase),s.acoes)};
  maquina::falar_na_barra(app,if s.pendente.is_some(){"explorar-aprovacao"}else{"explorando"},&s.nome,&s.app_nome,sub,false);
 }
 #[tauri::command]
@@ -60,7 +60,7 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   let nome=p["nome"].as_str().unwrap_or(&agente).chars().take(100).collect::<String>();
   let bundle=p["bundle"].as_str().filter(|s|app_permitido(s)).ok_or("aplicativo_nao_permitido")?.to_owned();
   let app_nome=p["app_nome"].as_str().unwrap_or(&bundle).chars().take(100).collect::<String>();
-  let minutos=p["minutos"].as_u64().filter(|m|[5,10,15].contains(m)).ok_or("prazo_invalido")?;
+  let minutos=p["minutos"].as_u64().filter(|m|[5,10,15,30,60].contains(m)).ok_or("prazo_invalido")?;
   let autonomia=p["autonomia"].as_bool().unwrap_or(false);let ate=agora()+minutos*60_000;
   let reserva=maquina::reservar_uso(&app,"explorando")?;
   g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva});
@@ -90,25 +90,47 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
  },_=>return Err("acao_desconhecida".into())}
  Ok(estado(&g))
 }
+const TECLAS_NOMEADAS:&[&str]=&["escape","enter","tab","espaco","esquerda","direita","cima","baixo","backspace","delete","home","end","pageup","pagedown","f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12"];
 fn validar_passo(p:&Value)->bool {
  let tipo=p["tipo"].as_str().unwrap_or("");
- if !["clique","arrastar","rolar","texto","tecla"].contains(&tipo)||p["descricao"].as_str().map(|s|s.is_empty()||s.len()>400).unwrap_or(true){return false;}
+ if !["clique","passar","arrastar","rolar","texto","tecla","menu","esperar"].contains(&tipo)||p["descricao"].as_str().map(|s|s.is_empty()||s.len()>400).unwrap_or(true){return false;}
  if !["normal","confirmar"].contains(&p["risco"].as_str().unwrap_or("")){return false;}
  let coord=|k:&str|p[k].as_f64().map(|n|n.is_finite()&&(0.0..=1.0).contains(&n)).unwrap_or(false);
- match tipo {"clique"=>coord("x")&&coord("y"),"arrastar"=>coord("x")&&coord("y")&&coord("x2")&&coord("y2"),"rolar"=>coord("x")&&coord("y")&&p["dy"].as_i64().map(|n|(-600..=600).contains(&n)).unwrap_or(false),"texto"=>p["texto"].as_str().map(|s|s.chars().count()<=1000&&!s.chars().any(char::is_control)).unwrap_or(false),"tecla"=>["escape","enter","tab","espaco","esquerda","direita","cima","baixo","backspace"].contains(&p["tecla"].as_str().unwrap_or("")),_=>false}
+ let tecla_ok=|t:&str|TECLAS_NOMEADAS.contains(&t)||(t.chars().count()==1&&t.chars().all(|c|c.is_ascii_lowercase()||c.is_ascii_digit()||"=-[];',./\\`".contains(c)));
+ let mods_ok=p["mods"].as_array().map(|m|m.len()<=4&&m.iter().all(|x|["cmd","shift","alt","ctrl"].contains(&x.as_str().unwrap_or(""))) ).unwrap_or(p["mods"].is_null());
+ match tipo {
+  "clique"=>coord("x")&&coord("y")&&(p["cliques"].is_null()||[1,2].contains(&p["cliques"].as_i64().unwrap_or(0)))&&(p["botao"].is_null()||["esquerdo","direito"].contains(&p["botao"].as_str().unwrap_or(""))),
+  "passar"=>coord("x")&&coord("y"),
+  "arrastar"=>coord("x")&&coord("y")&&coord("x2")&&coord("y2"),
+  "rolar"=>coord("x")&&coord("y")&&[&p["dy"],&p["dx"]].iter().all(|v|v.is_null()||v.as_i64().map(|n|(-600..=600).contains(&n)).unwrap_or(false))&&!(p["dy"].is_null()&&p["dx"].is_null()),
+  "texto"=>p["texto"].as_str().map(|s|s.chars().count()<=1000&&!s.chars().any(char::is_control)).unwrap_or(false),
+  "tecla"=>tecla_ok(&p["tecla"].as_str().unwrap_or("").to_lowercase())&&mods_ok,
+  "menu"=>p["caminho"].as_array().map(|c|(1..=4).contains(&c.len())&&c.iter().all(|x|x.as_str().map(|s|!s.trim().is_empty()&&s.len()<=80).unwrap_or(false))).unwrap_or(false)&&(p["listar"].is_null()||p["listar"].is_boolean()),
+  "esperar"=>p["ms"].as_u64().map(|n|(100..=10_000).contains(&n)).unwrap_or(false),
+  _=>false}
 }
+/// Combinado com o Rodrigo em 18/09: qualquer app (menos terminal, senhas e
+/// Ajustes, barrados em `app_permitido`) e, no modo autônomo, o agente age
+/// sozinho; só apagar, substituir, enviar/publicar e comprar pedem confirmação.
+/// Editar dentro do app (cortar, mover, digitar) segue sozinho: a rodada exige
+/// que a pessoa tenha preparado uma cópia de teste.
 fn precisa_aprovar(s:&Sessao,p:&Value)->bool {
- if !s.autonomia||p["risco"]!="normal"||["texto","tecla"].contains(&p["tipo"].as_str().unwrap_or("")){return true;}
+ let tipo=p["tipo"].as_str().unwrap_or("");
+ if tipo=="esperar"||(tipo=="menu"&&p["listar"]==true){return false;}
+ if !s.autonomia||p["risco"]!="normal"{return true;}
+ // Cmd+Delete manda para o Lixo no Finder e apaga em vários apps.
+ if tipo=="tecla"{let t=p["tecla"].as_str().unwrap_or("");if p["mods"].as_array().map(|m|m.iter().any(|x|x=="cmd")).unwrap_or(false)&&["backspace","delete"].contains(&t){return true;}}
  // Defesa adicional: rótulos de ações sensíveis exigem aprovação mesmo que o
  // modelo as tenha classificado como normais. Não substitui revisão semântica.
  let mut rotulo=p["descricao"].as_str().unwrap_or("").to_lowercase();
+ if let Some(c)=p["caminho"].as_array(){for x in c {rotulo.push(' ');rotulo.push_str(&x.as_str().unwrap_or("").to_lowercase());}}
  if let Some((_,_,leitura))=&s.ultima {
   if let (Some(x),Some(y),Some(r))=(p["x"].as_f64(),p["y"].as_f64(),leitura["janela"]["ret"].as_object()) {
    let x=r["x"].as_f64().unwrap_or(0.0)+x*r["w"].as_f64().unwrap_or(0.0);let y=r["y"].as_f64().unwrap_or(0.0)+y*r["h"].as_f64().unwrap_or(0.0);
    if let Some(cs)=leitura["acessibilidade"]["controles"].as_array(){for c in cs {let a=&c["ret"];if let (Some(cx),Some(cy),Some(w),Some(h))=(a["x"].as_f64(),a["y"].as_f64(),a["w"].as_f64(),a["h"].as_f64()){if x>=cx&&x<=cx+w&&y>=cy&&y<=cy+h{rotulo.push_str(&format!(" {} {}",c["titulo"],c["descricao"]).to_lowercase());}}}}
   }
  }
- ["export","public","enviar","send","share","compartilh","apagar","exclu","delete","remover","comprar","purchase","substitu","replace","pagamento"].iter().any(|v|rotulo.contains(v))
+ ["public","enviar","send","share","compartilh","apagar","exclu","delete","remover","lixo","trash","comprar","purchase","substitu","replace","pagamento","assinar"].iter().any(|v|rotulo.contains(v))
 }
 fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String>{
  let geracao=g.conexao.as_ref().ok_or("desconectado")?.0;
@@ -119,7 +141,7 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
  if s.ocupada||s.pendente.is_some(){return Err("operacao_em_andamento".into());}
  let acao=v["acao"].as_str().unwrap_or("");let agir=acao=="agir";
  if !agir&&acao!="olhar"{return Err("acao_invalida".into());}
- if s.leituras>=80||s.acoes>=40{return Err("limite_da_sessao".into());}
+ if s.leituras>=500||s.acoes>=300{return Err("limite_da_sessao".into());}
  let mut entrada=None;
  if agir {
   let passo=&v["passo"];
@@ -131,17 +153,29 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   let validade=if aprovada{600_000}else{120_000};
   if v["observacao"]!=*id||agora()-ts>validade{return Err("observacao_expirada".into());}
   if !aprovada&&precisa_aprovar(s,passo){s.pendente=Some(v);barra(app,s);return Ok(());}
-  let mut p=passo.clone();p["bundle"]=json!(s.bundle);p["impressao"]=leitura["impressao"].clone();p["janela"]=leitura["janela"]["numero"].clone();entrada=Some(p);
+  let mut p=passo.clone();p["bundle"]=json!(s.bundle);p["janela"]=leitura["janela"]["numero"].clone();p["autonomo"]=json!(s.autonomia);
+  if !s.autonomia{p["impressao"]=leitura["impressao"].clone();}
+  entrada=Some(p);
   s.ultima=None;s.acoes+=1;
  }
  s.fase=if agir{"agindo"}else{"observando"}.into();s.ocupada=true;s.leituras+=1;barra(app,s);
  let cancelada=s.cancelada.clone();let bundle=s.bundle.clone();let sessao=s.id.clone();let h=app.clone();let e=app.state::<Compartilhado>().inner().clone();
  std::thread::spawn(move||{
   let resultado=(||->Result<Value,String>{
-   if let Some(p)=entrada {let r=ajudante(&h,&["--acao"],Some(p),&cancelada)?;if r["ok"]!=true{return Err(r["motivo"].as_str().unwrap_or("acao_falhou").into());}std::thread::sleep(Duration::from_millis(350));}
+   let mut menu=Value::Null;
+   if let Some(p)=entrada {
+    if p["tipo"]=="esperar"{
+     // Espera o app (renderização, diálogo abrindo) sem o agente gastar um turno.
+     let fim=Instant::now()+Duration::from_millis(p["ms"].as_u64().unwrap_or(500));
+     while Instant::now()<fim{if cancelada.load(Ordering::SeqCst){return Err("pessoa".into());}std::thread::sleep(Duration::from_millis(100));}
+    } else {
+     let r=ajudante(&h,&["--acao"],Some(p),&cancelada)?;if r["ok"]!=true{return Err(r["motivo"].as_str().unwrap_or("acao_falhou").into());}
+     menu=r["menu"].clone();std::thread::sleep(Duration::from_millis(350));
+    }
+   }
    let leitura=ajudante(&h,&["--explorar",&bundle],None,&cancelada)?;
    if leitura["ok"]!=true||leitura["consistente"]!=true{return Err(leitura["motivo"].as_str().unwrap_or("leitura_inconsistente").into());}
-   Ok(json!({"ok":true,"leitura":leitura,"executada":agir,"observacao":req}))
+   Ok(json!({"ok":true,"leitura":leitura,"executada":agir,"observacao":req,"menu":menu}))
   })();
   if let Ok(mut g)=e.lock(){if g.conexao.as_ref().map(|c|c.0)!=Some(geracao){return;}
    let Some(s)=g.sessao.as_mut() else{return};if s.id!=sessao||!Arc::ptr_eq(&s.cancelada,&cancelada)||cancelada.load(Ordering::SeqCst)||s.ate<=agora(){return;}
@@ -191,5 +225,19 @@ fn ajudante(app:&AppHandle,args:&[&str],entrada:Option<Value>,cancelada:&AtomicB
 pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(Estado::default())));let h=app.clone();std::thread::spawn(move||loop{std::thread::sleep(Duration::from_millis(200));if let Ok(mut g)=h.state::<Compartilhado>().lock(){if g.sessao.as_ref().map(|s|s.ate<=agora()).unwrap_or(false){encerrar(&h,&mut g,"tempo_esgotado");}else if let Some(s)=g.sessao.as_mut(){if s.fase=="aguardando"&&agora()-s.iniciada_em>60_000{s.fase="demorado".into();barra(&h,s);}}}});}
 #[cfg(test)] mod testes{use super::*;
  #[test]fn rejeita_scripts_e_coordenadas_invalidas(){assert!(!validar_passo(&json!({"tipo":"shell","descricao":"testar","risco":"normal"})));assert!(!validar_passo(&json!({"tipo":"clique","descricao":"x","risco":"normal","x":2,"y":0})));assert!(validar_passo(&json!({"tipo":"clique","descricao":"abrir painel","risco":"normal","x":0.5,"y":0.5})));assert!(!validar_passo(&json!({"tipo":"texto","descricao":"colar","risco":"normal","texto":"a\nb"})));}
+ #[test]fn aceita_gestos_novos_e_recusa_malformados(){
+  let ok=|v:Value|validar_passo(&v);
+  assert!(ok(json!({"tipo":"clique","descricao":"abrir","risco":"normal","x":0.5,"y":0.5,"cliques":2})));
+  assert!(ok(json!({"tipo":"clique","descricao":"menu contexto","risco":"normal","x":0.5,"y":0.5,"botao":"direito"})));
+  assert!(ok(json!({"tipo":"tecla","descricao":"dividir clipe","risco":"normal","tecla":"b","mods":["cmd"]})));
+  assert!(ok(json!({"tipo":"menu","descricao":"exportar","risco":"normal","caminho":["Arquivo","Exportar"]})));
+  assert!(ok(json!({"tipo":"esperar","descricao":"renderizar","risco":"normal","ms":3000})));
+  assert!(ok(json!({"tipo":"rolar","descricao":"timeline","risco":"normal","x":0.5,"y":0.8,"dx":-200})));
+  assert!(!ok(json!({"tipo":"clique","descricao":"x","risco":"normal","x":0.5,"y":0.5,"cliques":3})));
+  assert!(!ok(json!({"tipo":"tecla","descricao":"x","risco":"normal","tecla":"b","mods":["hyper"]})));
+  assert!(!ok(json!({"tipo":"tecla","descricao":"x","risco":"normal","tecla":"rm -rf"})));
+  assert!(!ok(json!({"tipo":"menu","descricao":"x","risco":"normal","caminho":[]})));
+  assert!(!ok(json!({"tipo":"esperar","descricao":"x","risco":"normal","ms":60000})));
+ }
  #[test]fn nao_oferece_terminais_ou_cofres(){assert!(app_permitido("com.lemon.lvoverseas"));assert!(!app_permitido("com.apple.Terminal"));assert!(!app_permitido("com.apple.keychainaccess"));}
 }
