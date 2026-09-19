@@ -208,12 +208,20 @@ if let pedido = pedido {
         var dono: pid_t = 0; AXUIElementGetPid(alvo,&dono)
         return dono == pid && texto(alvo,kAXRoleAttribute) != "AXSecureTextField" && texto(alvo,kAXSubroleAttribute) != "AXSecureTextField"
     }
-    func mouse(_ tipo: CGEventType,_ pt: CGPoint) { CGEvent(mouseEventSource:nil,mouseType:tipo,mouseCursorPosition:pt,mouseButton:.left)?.post(tap:.cghidEventTap) }
+    // Mesmo gesto do roteiro (gravador-mac `clicarEm`), que clica no CapCut: cursor
+    // chega antes, e o botão desce e sobe com intervalo e contagem de clique.
+    // 18/09: descer+subir no mesmo instante só realçava o Exportar, sem abrir nada.
+    func mouse(_ tipo: CGEventType,_ pt: CGPoint) {
+        guard let ev = CGEvent(mouseEventSource:nil,mouseType:tipo,mouseCursorPosition:pt,mouseButton:.left) else { return }
+        if tipo == .leftMouseDown || tipo == .leftMouseUp { ev.setIntegerValueField(.mouseEventClickState, value: 1) }
+        ev.post(tap:.cghidEventTap)
+    }
     if t == "clique" || t == "arrastar" {
         guard let pt=ponto("x","y"),conferir(pt) else { resposta(["ok":false,"motivo":"alvo_fora_do_app_ou_protegido"]) }
         var fim: CGPoint? = nil
         if t == "arrastar" { fim=ponto("x2","y2"); guard let f=fim,conferir(f) else { resposta(["ok":false,"motivo":"destino_fora_do_app"]) } }
-        mouse(.leftMouseDown,pt)
+        mouse(.mouseMoved,pt); Thread.sleep(forTimeInterval:0.06)
+        mouse(.leftMouseDown,pt); Thread.sleep(forTimeInterval:0.04)
         if let f=fim { for i in 1...12 { mouse(.leftMouseDragged,CGPoint(x:pt.x+(f.x-pt.x)*Double(i)/12,y:pt.y+(f.y-pt.y)*Double(i)/12)); Thread.sleep(forTimeInterval:0.015) } }
         mouse(.leftMouseUp,fim ?? pt)
     } else if t == "rolar" {
