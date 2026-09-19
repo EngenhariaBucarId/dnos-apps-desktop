@@ -125,7 +125,8 @@ fn precisa_aprovar(s:&Sessao,p:&Value)->bool {
  let mut rotulo=p["descricao"].as_str().unwrap_or("").to_lowercase();
  if let Some(c)=p["caminho"].as_array(){for x in c {rotulo.push(' ');rotulo.push_str(&x.as_str().unwrap_or("").to_lowercase());}}
  if let Some((_,_,leitura))=&s.ultima {
-  if let (Some(x),Some(y),Some(r))=(p["x"].as_f64(),p["y"].as_f64(),leitura["janela"]["ret"].as_object()) {
+  let base=if leitura["captura"]["ret"].is_object(){&leitura["captura"]["ret"]}else{&leitura["janela"]["ret"]};
+  if let (Some(x),Some(y),Some(r))=(p["x"].as_f64(),p["y"].as_f64(),base.as_object()) {
    let x=r["x"].as_f64().unwrap_or(0.0)+x*r["w"].as_f64().unwrap_or(0.0);let y=r["y"].as_f64().unwrap_or(0.0)+y*r["h"].as_f64().unwrap_or(0.0);
    if let Some(cs)=leitura["acessibilidade"]["controles"].as_array(){for c in cs {let a=&c["ret"];if let (Some(cx),Some(cy),Some(w),Some(h))=(a["x"].as_f64(),a["y"].as_f64(),a["w"].as_f64(),a["h"].as_f64()){if x>=cx&&x<=cx+w&&y>=cy&&y<=cy+h{rotulo.push_str(&format!(" {} {}",c["titulo"],c["descricao"]).to_lowercase());}}}}
   }
@@ -153,7 +154,7 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   let validade=if aprovada{600_000}else{120_000};
   if v["observacao"]!=*id||agora()-ts>validade{return Err("observacao_expirada".into());}
   if !aprovada&&precisa_aprovar(s,passo){s.pendente=Some(v);barra(app,s);return Ok(());}
-  let mut p=passo.clone();p["bundle"]=json!(s.bundle);p["janela"]=leitura["janela"]["numero"].clone();p["autonomo"]=json!(s.autonomia);
+  let mut p=passo.clone();p["bundle"]=json!(s.bundle);p["janela"]=leitura["janela"]["numero"].clone();p["autonomo"]=json!(s.autonomia);p["captura"]=leitura["captura"]["ret"].clone();
   if !s.autonomia{p["impressao"]=leitura["impressao"].clone();}
   entrada=Some(p);
   s.ultima=None;s.acoes+=1;

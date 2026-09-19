@@ -103,17 +103,29 @@ var saida: [String: Any] = [
 // por cima da lida; capturar só a janela deixava o agente sem ver a lista de
 // resoluções do Exportar do CapCut. Compõe TODAS as janelas do app visíveis
 // sobre o retângulo da janela lida (só do app: nada de outros programas).
-func capturarComPopups(_ numero: UInt32, _ ret: CGRect) -> CGImage? {
+// 19/09 (Rodrigo: "igual ao Cowork"): a captura cobre a ÁREA DE TODAS AS
+// JANELAS do app (união dos retângulos, recortada à tela), não só a lida —
+// lista suspensa ou painel que abre fora da janela deixa de ser ponto cego.
+// Continua só o app autorizado: outras janelas não entram na composição.
+func areaDoApp(_ ret: CGRect) -> (CGRect, [UInt32]) {
     let todas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
         .filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && (($0[kCGWindowLayer as String] as? Int) ?? 0) >= 0 }
-        .filter { w in (w[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }.map { $0.intersects(ret) } ?? false }
-        .compactMap { $0[kCGWindowNumber as String] as? UInt32 }
+    var uniao = ret
+    for w in todas { if let r = (w[kCGWindowBounds as String] as? [String: Any]).flatMap({ CGRect(dictionaryRepresentation: $0 as CFDictionary) }), r.width > 1, r.height > 1 { uniao = uniao.union(r) } }
+    // Recorta à tela onde a janela lida está (o macOS mede janelas nesse espaço).
+    var telas: [CGDirectDisplayID] = Array(repeating: 0, count: 8); var n: UInt32 = 0
+    CGGetDisplaysWithRect(ret, 8, &telas, &n)
+    if n > 0 { uniao = uniao.intersection(CGDisplayBounds(telas[0])) }
+    return (uniao.isNull ? ret : uniao, todas.compactMap { $0[kCGWindowNumber as String] as? UInt32 })
+}
+func capturarComPopups(_ numero: UInt32, _ ret: CGRect) -> CGImage? {
+    let (area, todas) = areaDoApp(ret)
     let ids = todas.contains(numero) ? todas : [numero] + todas
     let ptr = UnsafeMutablePointer<UnsafeRawPointer?>.allocate(capacity: ids.count)
     defer { ptr.deallocate() }
     for (i, id) in ids.enumerated() { ptr[i] = UnsafeRawPointer(bitPattern: UInt(id)) }
     if let arr = CFArrayCreate(kCFAllocatorDefault, ptr, ids.count, nil),
-       let img = CGImage(windowListFromArrayScreenBounds: ret, windowArray: arr, imageOption: [.boundsIgnoreFraming, .nominalResolution]),
+       let img = CGImage(windowListFromArrayScreenBounds: area, windowArray: arr, imageOption: [.boundsIgnoreFraming, .nominalResolution]),
        img.width > 1 { return img }
     return CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(numero), [.boundsIgnoreFraming, .nominalResolution])
 }
@@ -158,6 +170,8 @@ guard let janela = janelaEscolhida,
     saida["ok"] = false; saida["motivo"] = "sem_janela_visivel"; resposta(saida)
 }
 saida["janela"] = ["numero": numero, "titulo": janela[kCGWindowName as String] as? String ?? "", "ret": retJSON(ret)]
+let captura = areaDoApp(ret).0
+saida["captura"] = ["ret": retJSON(captura)]
 var avisos: [String] = [], controles: [[String: Any]] = []
 var truncada = false, senha = false
 var raiz: AXUIElement? = nil
@@ -211,7 +225,7 @@ else if let img = capturarComPopups(numero, ret) {
     if let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
         ctx.interpolationQuality = .high; ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
         if let pequena = ctx.makeImage(), let jpg = NSBitmapImageRep(cgImage: pequena).representation(using: .jpeg, properties: [.compressionFactor: 0.7]) {
-            saida["foto"] = ["mime": "image/jpeg", "dados": jpg.base64EncodedString(), "largura": w, "altura": h, "ret": retJSON(ret)]
+            saida["foto"] = ["mime": "image/jpeg", "dados": jpg.base64EncodedString(), "largura": w, "altura": h, "ret": retJSON(captura)]
         }
     }
 }
@@ -237,7 +251,11 @@ if let pedido = pedido {
     func ponto(_ x: String, _ y: String) -> CGPoint? {
         guard let a = pedido[x] as? Double, let b = pedido[y] as? Double,
               a.isFinite, b.isFinite, a >= 0, a <= 1, b >= 0, b <= 1 else { return nil }
-        return CGPoint(x:ret.minX+a*ret.width,y:ret.minY+b*ret.height)
+        // Coordenadas relativas à captura (área do app), como o agente a vê.
+        let base = (pedido["captura"] as? [String: Any]).flatMap { d -> CGRect? in
+            guard let x = d["x"] as? Double, let y = d["y"] as? Double, let w = d["w"] as? Double, let h = d["h"] as? Double, w > 0, h > 0 else { return nil }
+            return CGRect(x: x, y: y, width: w, height: h) } ?? captura
+        return CGPoint(x:base.minX+a*base.width,y:base.minY+b*base.height)
     }
     func conferir(_ pt: CGPoint) -> Bool {
         var alvo: AXUIElement?
