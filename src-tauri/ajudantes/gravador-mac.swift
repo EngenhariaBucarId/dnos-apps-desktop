@@ -733,6 +733,7 @@ func arrastarDe(_ a: CGPoint, para b: CGPoint) {
 }
 
 func fraseDoPasso(_ p: [String: Any]) -> String {
+    if let d = p["descricao"] as? String, !d.isEmpty { return d }
     let ax = p["ax"] as? [String: Any]
     let nome = (ax?["titulo"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (ax?["descricao"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (ax?["valor"] as? String) ?? ""
     switch p["t"] as? String ?? "" {
@@ -772,18 +773,65 @@ func esperarAlvo(_ p: [String: Any], pid: pid_t, ms: Int) -> (el: AXUIElement?, 
     return nil
 }
 
+/// Tela (monitor) onde está a janela focada do app — a mesma base da captura da exploração.
+func telaDoApp(_ pid: pid_t) -> CGRect {
+    if let j = janelaFocada(pid), let r = j.ret, let x = r["x"] as? Int, let y = r["y"] as? Int, let w = r["w"] as? Int, let h = r["h"] as? Int {
+        var telas: [CGDirectDisplayID] = Array(repeating: 0, count: 8); var n: UInt32 = 0
+        CGGetDisplaysWithRect(CGRect(x: x, y: y, width: w, height: h), 8, &telas, &n)
+        if n > 0 { return CGDisplayBounds(telas[0]) }
+    }
+    return CGDisplayBounds(CGMainDisplayID())
+}
+/// v2: `x`/`y` em 0..1 relativos à tela inteira → ponto de tela.
+func pontoDaTela(_ p: [String: Any], pid: pid_t) -> CGPoint? {
+    guard let x = p["x"] as? Double, let y = p["y"] as? Double, x >= 0, x <= 1, y >= 0, y <= 1 else { return nil }
+    let t = telaDoApp(pid)
+    return CGPoint(x: t.minX + x * t.width, y: t.minY + y * t.height)
+}
+/// v2: item de menu do topo pelo nome (Arquivo › Exportar), via acessibilidade. nil = ok; texto = motivo.
+func menuPorCaminho(_ caminho: [String], pid: pid_t) -> String? {
+    guard (1...4).contains(caminho.count) else { return "menu: caminho inválido" }
+    let axApp = AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(axApp, 1.0)
+    guard let barra = axAtributo(axApp, kAXMenuBarAttribute) else { return "menu indisponível" }
+    let barraEl = barra as! AXUIElement
+    func filhos(_ e: AXUIElement) -> [AXUIElement] { axAtributo(e, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
+    func limpo(_ s: String) -> String { s.lowercased().replacingOccurrences(of: "…", with: "").replacingOccurrences(of: "...", with: "").trimmingCharacters(in: .whitespaces) }
+    var itens = Array(filhos(barraEl).dropFirst()); var atual: AXUIElement? = nil
+    for nome in caminho {
+        let alvo = limpo(nome)
+        guard let item = itens.first(where: { limpo(axTexto($0, kAXTitleAttribute)) == alvo }) ?? itens.first(where: { !alvo.isEmpty && limpo(axTexto($0, kAXTitleAttribute)).hasPrefix(alvo) }) else {
+            return "menu \"\(nome)\" não encontrado"
+        }
+        let tit = limpo(axTexto(item, kAXTitleAttribute))
+        if ["encerrar", "quit", "sair do", "desligar", "reiniciar", "log out", "terminar sessão", "forçar"].contains(where: { tit.hasPrefix($0) }) { return "menu bloqueado" }
+        atual = item; itens = filhos(item).flatMap { filhos($0) }
+    }
+    guard let fim = atual else { return "menu: caminho inválido" }
+    if let ativo = axAtributo(fim, kAXEnabledAttribute) as? Bool, !ativo { return "item de menu desativado" }
+    return AXUIElementPerformAction(fim, kAXPressAction as CFString) == .success ? nil : "o menu não respondeu"
+}
+
 func executarRoteiro(_ roteiro: [String: Any], ignorar: String) {
     let passos = (roteiro["passos"] as? [[String: Any]]) ?? []
     let total = passos.count
     let inicio = agoraMs()
     if total == 0 { linha(["t": "erro", "motivo": "roteiro sem passos"]); return }
     var bundleAtual = ""
+    // Roteiro v2 (escrito pelo agente no Explore e aprenda, 19/09): `bundle` no topo,
+    // passos com `acao`/`t` = menu | clique{x,y da TELA} | esperar_janela | esperar |
+    // tecla{mods} | ler. Passo desconhecido PARA (antes seguia calado).
+    if let b = roteiro["bundle"] as? String, !b.isEmpty {
+        if b == ignorar { linha(["t": "parou", "passo": 0, "de": total, "texto": "abrir app", "motivo": "o roteiro é dentro do próprio dn.os"]); return }
+        if !ativarApp(bundle: b, nome: roteiro["app"] as? String ?? b) { linha(["t": "parou", "passo": 0, "de": total, "texto": "abrir app", "motivo": "não consegui abrir \(roteiro["app"] as? String ?? b)"]); return }
+        bundleAtual = b
+        dormir(400)
+    }
     for (i, p) in passos.enumerated() {
         let n = i + 1
         let frase = fraseDoPasso(p)
         if execucao.pediuParar() { linha(["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": "você parou"]); return }
         linha(["t": "passo", "n": n, "de": total, "texto": frase, "estado": "rodando"])
-        let tipo = p["t"] as? String ?? ""
+        let tipo = (p["t"] as? String) ?? (p["acao"] as? String) ?? ""
         // O app do passo: gravado no próprio passo (app.bundle); troca se preciso.
         if let a = p["app"] as? [String: Any], let b = a["bundle"] as? String, !b.isEmpty, b != bundleAtual {
             if b == ignorar { linha(["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": "o passo é dentro do próprio dn.os"]); return }
@@ -800,6 +848,10 @@ func executarRoteiro(_ roteiro: [String: Any], ignorar: String) {
         case "clique", "duplo":
             if tipo == "clique", let ax = p["ax"] as? [String: Any], (ax["papel"] as? String) == "AXDockItem" {
                 if !clicarNoDock(ax) { falhou = "não achei \"\(ax["titulo"] as? String ?? "o item")\" no Dock" }
+            } else if p["ax"] == nil, p["coord"] == nil, let pt = pontoDaTela(p, pid: pid) {
+                // v2: x/y 0..1 relativos à tela inteira (o que o agente viu na exploração).
+                let direito = (p["botao"] as? String) == "direito"
+                clicarEm(pt, direito: direito, duplo: tipo == "duplo" || (p["cliques"] as? Int) == 2)
             } else if let alvo = esperarAlvo(p, pid: pid, ms: 8000) {
                 let direito = (p["botao"] as? String) == "direito"
                 if tipo == "clique" && !direito, let el = alvo.el, ["AXButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXLink", "AXDisclosureTriangle"].contains(axTexto(el, kAXRoleAttribute)), AXUIElementPerformAction(el, kAXPressAction as CFString) == .success {
@@ -831,15 +883,37 @@ func executarRoteiro(_ roteiro: [String: Any], ignorar: String) {
                 }
             }
         case "tecla":
-            if !teclaPorNome(p["tecla"] as? String ?? "") { falhou = "tecla desconhecida" }
+            if let mods = p["mods"] as? [String], !mods.isEmpty {
+                let combo = (mods + [p["tecla"] as? String ?? ""]).joined(separator: "+")
+                if !atalhoPorNome(combo) { falhou = "atalho desconhecido: \(combo)" }
+            } else if !teclaPorNome(p["tecla"] as? String ?? "") { falhou = "tecla desconhecida" }
         case "atalho":
             if !atalhoPorNome(p["tecla"] as? String ?? "") { falhou = "atalho desconhecido" }
         case "rolar":
-            let pt = esperarAlvo(p, pid: pid, ms: 1500)?.ponto ?? pontoRelativo(p, pid: pid) ?? CGPoint(x: 600, y: 400)
-            rolarEm(pt, direcao: p["direcao"] as? String ?? "baixo", quanto: p["quanto"] as? Int ?? 300)
+            let pt = esperarAlvo(p, pid: pid, ms: 1500)?.ponto ?? pontoRelativo(p, pid: pid) ?? pontoDaTela(p, pid: pid) ?? CGPoint(x: 600, y: 400)
+            let quanto = p["quanto"] as? Int ?? (p["dy"] as? Int).map { abs($0) } ?? 300
+            let direcao = p["direcao"] as? String ?? ((p["dy"] as? Int ?? 0) < 0 ? "cima" : "baixo")
+            rolarEm(pt, direcao: direcao, quanto: quanto)
+        case "menu":
+            if let r = menuPorCaminho(p["caminho"] as? [String] ?? [], pid: pid) { falhou = r }
+        case "esperar_janela":
+            let quer = (p["titulo_contem"] as? String ?? "").lowercased()
+            let fim = Date().addingTimeInterval(Double(min(30000, p["ms"] as? Int ?? 8000)) / 1000)
+            var achou = false
+            repeat {
+                if execucao.pediuParar() { break }
+                let lista = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
+                if lista.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && (($0[kCGWindowName as String] as? String ?? "").lowercased().contains(quer)) }) { achou = true; break }
+                dormir(250)
+            } while Date() < fim
+            if !achou { falhou = "a janela \"\(p["titulo_contem"] as? String ?? "")\" não apareceu" }
+        case "esperar":
+            dormir(min(10000, p["ms"] as? Int ?? 500))
+        case "ler", "passar":
+            if tipo == "passar", let pt = pontoDaTela(p, pid: pid) { mover(pt) }
         default:
-            break
-        }
+            falhou = tipo.isEmpty ? "passo sem tipo" : "passo desconhecido: \(tipo)"
+                }
         if let f = falhou {
             var out: [String: Any] = ["t": "parou", "passo": n, "de": total, "texto": frase, "motivo": f, "app": app.nome]
             if let j = janelaFocada(pid) { out["janela"] = j.titulo }

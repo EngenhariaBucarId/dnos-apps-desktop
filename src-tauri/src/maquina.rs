@@ -293,7 +293,7 @@ pub async fn executar(app: AppHandle, pedido: Value) {
     let pasta = match app.path().app_data_dir() { Ok(p) => p.join("roteiros"), Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e.to_string() })) };
     let _ = std::fs::create_dir_all(&pasta);
     let arq_roteiro = pasta.join(format!("{}.json", gravador::agora_ms()));
-    if let Err(e) = std::fs::write(&arq_roteiro, json!({ "nome": nome, "passos": passos }).to_string()) { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e.to_string() })); }
+    if let Err(e) = std::fs::write(&arq_roteiro, json!({ "nome": nome, "passos": passos, "bundle": pedido["bundle"], "app": pedido["app"] }).to_string()) { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e.to_string() })); }
     let identificador = app.config().identifier.clone();
     let mut filho = match Command::new(&arq).arg("executar").arg("--roteiro").arg(&arq_roteiro).arg("--ignorar").arg(&identificador)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
