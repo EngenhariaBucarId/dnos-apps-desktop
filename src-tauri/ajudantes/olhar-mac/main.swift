@@ -107,6 +107,17 @@ var saida: [String: Any] = [
 // JANELAS do app (união dos retângulos, recortada à tela), não só a lida —
 // lista suspensa ou painel que abre fora da janela deixa de ser ponto cego.
 // Continua só o app autorizado: outras janelas não entram na composição.
+// 19/09 (Rodrigo: "vamos fazer igual Cowork"): a imagem é a TELA INTEIRA
+// (o monitor onde a janela lida está), com tudo que aparece nela. As AÇÕES
+// continuam só no app autorizado (`conferir` exige o dono do ponto = app).
+func telaDaJanela(_ ret: CGRect) -> CGRect {
+    var telas: [CGDirectDisplayID] = Array(repeating: 0, count: 8); var n: UInt32 = 0
+    CGGetDisplaysWithRect(ret, 8, &telas, &n)
+    return n > 0 ? CGDisplayBounds(telas[0]) : CGDisplayBounds(CGMainDisplayID())
+}
+func capturarTela(_ area: CGRect) -> CGImage? {
+    CGWindowListCreateImage(area, .optionOnScreenOnly, kCGNullWindowID, [.nominalResolution])
+}
 func areaDoApp(_ ret: CGRect) -> (CGRect, [UInt32]) {
     let todas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
         .filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && (($0[kCGWindowLayer as String] as? Int) ?? 0) >= 0 }
@@ -157,12 +168,6 @@ func escolherJanela() -> [String: Any]? {
     return janelaAX(kAXMainWindowAttribute) ?? janelas.first
 }
 let janelaEscolhida: [String: Any]? = escolherJanela()
-// O agente precisa saber que há outras janelas (diálogo, painel) além da lida.
-saida["janelas_do_app"] = janelas.prefix(8).map { w -> [String: Any] in
-    let r = limitesDe(w) ?? .zero
-    return ["titulo": w[kCGWindowName as String] as? String ?? "", "w": Int(r.width), "h": Int(r.height),
-            "lida": (w[kCGWindowNumber as String] as? UInt32) == (janelaEscolhida?[kCGWindowNumber as String] as? UInt32)]
-}
 guard let janela = janelaEscolhida,
       let numero = janela[kCGWindowNumber as String] as? UInt32,
       let limites = janela[kCGWindowBounds as String] as? [String: Any],
@@ -170,8 +175,16 @@ guard let janela = janelaEscolhida,
     saida["ok"] = false; saida["motivo"] = "sem_janela_visivel"; resposta(saida)
 }
 saida["janela"] = ["numero": numero, "titulo": janela[kCGWindowName as String] as? String ?? "", "ret": retJSON(ret)]
-let captura = areaDoApp(ret).0
-saida["captura"] = ["ret": retJSON(captura)]
+let captura = telaDaJanela(ret)
+saida["captura"] = ["ret": retJSON(captura), "tela_inteira": true]
+// O agente precisa saber que há outras janelas (diálogo, painel) além da lida.
+saida["janelas_do_app"] = janelas.prefix(8).map { w -> [String: Any] in
+    let r = limitesDe(w) ?? .zero
+    let q = { (v: CGFloat) -> Double in Double((v * 1000).rounded()) / 1000.0 }
+    return ["titulo": w[kCGWindowName as String] as? String ?? "", "w": Int(r.width), "h": Int(r.height),
+            "na_imagem": ["x": q((r.minX - captura.minX) / max(1, captura.width)), "y": q((r.minY - captura.minY) / max(1, captura.height)), "w": q(r.width / max(1, captura.width)), "h": q(r.height / max(1, captura.height))],
+            "lida": (w[kCGWindowNumber as String] as? UInt32) == (janelaEscolhida?[kCGWindowNumber as String] as? UInt32)]
+}
 var avisos: [String] = [], controles: [[String: Any]] = []
 var truncada = false, senha = false
 var raiz: AXUIElement? = nil
@@ -216,8 +229,8 @@ if axOK {
 saida["acessibilidade"] = ["estado": !axOK ? "sem-permissao" : raiz == nil ? "indisponivel" : truncada ? "parcial" : "ok", "truncada": truncada, "controles": controles]
 if !telaOK { avisos.append("gravacao_de_tela_nao_autorizada") }
 else if senha { avisos.append("foto_omitida_campo_protegido") }
-else if let img = capturarComPopups(numero, ret) {
-    if let bytes = img.dataProvider?.data {
+else if let img = capturarTela(captura) ?? capturarComPopups(numero, ret) {
+    if let soJanela = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(numero), [.boundsIgnoreFraming, .nominalResolution]), let bytes = soJanela.dataProvider?.data {
         saida["impressao"] = SHA256.hash(data: bytes as Data).map { String(format: "%02x", $0) }.joined()
     }
     let escala = min(1, 1600 / CGFloat(max(img.width, img.height)))
