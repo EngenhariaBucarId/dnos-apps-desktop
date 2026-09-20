@@ -479,6 +479,19 @@ pub fn instalar(app: &AppHandle) {
         let h2 = h.clone();
         tauri::async_runtime::spawn(async move { no_mac(h2, estado, geracao).await });
     });
+    // Reabrir o dn.os. A autorização de Acessibilidade vale para o binário que
+    // está no disco; o processo que JÁ está rodando continua com a identidade
+    // dele — e, quando o atualizador trocou o app por baixo, essa identidade
+    // nem existe mais na lista do macOS. Foi o que aconteceu com o Rodrigo em
+    // 20/09: ele autorizou, o 0.7.33 rodando seguiu dizendo "acessibilidade:
+    // false" por três minutos, e só reabrir (já como 0.8.0) resolveu. Sem este
+    // botão a pessoa fica olhando para uma tela que nunca muda.
+    let h = app.clone();
+    app.listen_any("dnos://maquina/reabrir", move |_| {
+        meu_chrome::registrar(&h, "maquina: reabrindo a pedido da pessoa (permissão nova)");
+        h.restart();
+    });
+
     let h = app.clone();
     app.listen_any("dnos://maquina/permissoes", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
