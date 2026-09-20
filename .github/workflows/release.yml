@@ -14,8 +14,50 @@ on:
 permissions:
   contents: write
 
+# Publicar só quando as TRÊS plataformas ficarem prontas (20/09/2026). Antes,
+# cada job publicava por conta própria: na v0.8.1 o Mac caiu numa falha de rede
+# ao subir os arquivos e a release foi ao ar sem `.dmg` e com um `latest.json`
+# que anunciava 0.8.1 sem nenhuma entrada `darwin` — para quem usa Mac, uma
+# versão que não existe e um atualizador que não acha nada.
+#
+# Agora: um rascunho é criado antes, os três jobs sobem os arquivos nele, e só
+# depois de todos passarem (e de conferirmos que os instaladores das três
+# plataformas estão lá) o rascunho vira release pública.
 jobs:
+  rascunho:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.r.outputs.result }}
+    steps:
+      - uses: actions/github-script@v7
+        id: r
+        with:
+          result-encoding: string
+          script: |
+            if (!context.ref.startsWith("refs/tags/")) {
+              throw new Error("A release nasce de uma tag v*. Rode o fluxo a partir da tag.");
+            }
+            const tag = context.ref.replace("refs/tags/", "");
+            const { owner, repo } = context.repo;
+            const notas = [
+              "Instaladores do dn.os Desktop. Mac: baixe o `.dmg`. Windows: baixe o `-setup.exe`. Linux: `.AppImage` (qualquer distro), `.deb` (Ubuntu/Debian) ou `.rpm` (Fedora).",
+              "Primeira abertura sem assinatura: veja o README do repositório.",
+            ].join("\n");
+            const todas = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const existente = todas.find((r) => r.tag_name === tag);
+            if (existente) {
+              // Reexecução: volta ao estado de rascunho até tudo passar de novo.
+              await github.rest.repos.updateRelease({ owner, repo, release_id: existente.id, draft: true });
+              return String(existente.id);
+            }
+            const nova = await github.rest.repos.createRelease({
+              owner, repo, tag_name: tag, name: `dn.os Desktop ${tag}`,
+              body: notas, draft: true, prerelease: false,
+            });
+            return String(nova.data.id);
+
   build:
+    needs: rascunho
     strategy:
       fail-fast: false
       matrix:
@@ -114,12 +156,39 @@ jobs:
           # + APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID (notarização) e tirar o passo.
           APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && 'dn.os Desktop' || '' }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "dn.os Desktop ${{ github.ref_name }}"
-          releaseBody: |
-            Instaladores do dn.os Desktop. Mac: baixe o `.dmg`. Windows: baixe o `-setup.exe`. Linux: `.AppImage` (qualquer distro), `.deb` (Ubuntu/Debian) ou `.rpm` (Fedora).
-            Primeira abertura sem assinatura: veja o README do repositório.
-          releaseDraft: false
-          prerelease: false
+          # Sobe para o rascunho criado antes; quem publica é o job "publicar".
+          releaseId: ${{ needs.rascunho.outputs.id }}
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  publicar:
+    # Só roda se os três jobs da matriz passarem — um "needs" de matriz falha
+    # inteiro quando qualquer perna falha, mesmo com fail-fast: false.
+    needs: [rascunho, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const release_id = Number("${{ needs.rascunho.outputs.id }}");
+            const rel = await github.rest.repos.getRelease({ owner, repo, release_id });
+            const nomes = rel.data.assets.map((a) => a.name);
+            // Cinto e suspensório: os jobs passaram, mas a release ainda pode
+            // estar incompleta se um upload silencioso falhar.
+            const precisa = [
+              [/\.dmg$/, "instalador do Mac (.dmg)"],
+              [/app\.tar\.gz$/, "pacote de atualização do Mac (.app.tar.gz)"],
+              [/-setup\.exe$/, "instalador do Windows (-setup.exe)"],
+              [/\.msi$/, "instalador do Windows (.msi)"],
+              [/\.AppImage$/, "AppImage do Linux"],
+              [/\.deb$/, "pacote .deb"],
+              [/\.rpm$/, "pacote .rpm"],
+              [/^latest\.json$/, "latest.json do atualizador"],
+            ];
+            const faltando = precisa.filter(([rx]) => !nomes.some((n) => rx.test(n))).map(([, o]) => o);
+            if (faltando.length) {
+              throw new Error(`Release incompleta, continua como rascunho. Falta: ${faltando.join(", ")}. Presentes: ${nomes.join(", ")}`);
+            }
+            await github.rest.repos.updateRelease({ owner, repo, release_id, draft: false });
+            core.info(`Publicada com ${nomes.length} arquivos.`);
