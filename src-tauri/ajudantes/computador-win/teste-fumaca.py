@@ -116,12 +116,15 @@ try:
         print("menu Edit (listar):", json.dumps(r, ensure_ascii=False)[:300])
         data = next((n for n in r.get("menu", []) if "date" in n.lower()), None)
         if data:
-            antes = max([len(v) for v in valores(rodar(["--explorar", "notepad.exe"], timeout=40))] + [0])
-            r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "inserir data", "caminho": ["Edit", data]}))
-            conferir("acionar Edit › " + data, r.get("executada") is True, str(r)[:200])
-            time.sleep(0.6)
-            depois = max([len(v) for v in valores(rodar(["--explorar", "notepad.exe"], timeout=40))] + [0])
-            conferir("o item de submenu fez efeito (texto cresceu)", depois > antes, f"{antes} -> {depois}")
+            import re
+            tem_data = lambda vs: any(re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", v) for v in vs)
+            conferir("antes: sem data no texto", not tem_data(valores(rodar(["--explorar", "notepad.exe"], timeout=40))))
+            # Nome curto, como o agente escreveria (o Windows traz "Time/Date\tF5").
+            curto = data.split("\t")[0]
+            r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "inserir data", "caminho": ["Edit", curto]}))
+            conferir("acionar Edit › " + curto, r.get("executada") is True, str(r)[:200])
+            time.sleep(0.8)
+            conferir("o item de submenu fez efeito (a data entrou no texto)", tem_data(valores(rodar(["--explorar", "notepad.exe"], timeout=40))))
         else:
             print("sem item de data no menu Edit; acionamento aninhado não testado")
         r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "inexistente", "caminho": ["Nao existe"]}))

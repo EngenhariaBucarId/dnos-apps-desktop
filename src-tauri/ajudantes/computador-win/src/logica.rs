@@ -134,9 +134,10 @@ pub fn atalho_bloqueado(mods: &[String], tecla: &str) -> bool {
     false
 }
 
-/// Texto de item de menu sem reticências, acelerador (&) e caixa.
+/// Texto de item de menu sem reticências, acelerador (&), atalho ("\tCtrl+Z") e caixa.
 pub fn limpo(s: &str) -> String {
-    s.to_lowercase().replace('\u{2026}', "").replace("...", "").replace('&', "").trim().to_string()
+    let sem_atalho = s.split('\t').next().unwrap_or("");
+    sem_atalho.to_lowercase().replace('\u{2026}', "").replace("...", "").replace('&', "").trim().to_string()
 }
 
 /// Espaços colapsados e caixa baixa, para comparar títulos.
@@ -323,6 +324,8 @@ mod testes {
     fn menu_limpo_e_bloqueio() {
         assert_eq!(limpo("&Arquivo…"), "arquivo");
         assert_eq!(limpo("Exportar..."), "exportar");
+        assert_eq!(limpo("Time/Date\tF5"), "time/date");
+        assert_eq!(limpo("Undo\tCtrl+Z"), "undo");
         assert!(menu_bloqueado("E&xit"));
         assert!(menu_bloqueado("Sair do CapCut"));
         assert!(!menu_bloqueado("Exportar"));
