@@ -308,7 +308,9 @@ pub async fn executar(app: AppHandle, pedido: Value) {
     }
     mostrar_barra(&app);
     falar_na_barra(&app, "atuando", &agente, &nome, format!("preparando · {total} passos"), false);
-    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "id": id, "passo": 0, "total": total, "texto": "preparando" }));
+    // nome/bundle no estado (20/09): a página usa para abrir a exploração quando o roteiro para.
+    let bundle_do_roteiro = pedido["bundle"].clone();
+    emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "id": id, "passo": 0, "total": total, "texto": "preparando", "nome": nome, "bundle": bundle_do_roteiro }));
     let mut fim = json!({ "estado": "erro", "modo": "mac", "motivo": "o executor da máquina fechou sem terminar" });
     while let Some(v) = rx.recv().await {
         match v["t"].as_str().unwrap_or("") {
@@ -319,7 +321,7 @@ pub async fn executar(app: AppHandle, pedido: Value) {
                     emitir_roteiro(&app, json!({ "estado": "rodando", "modo": "mac", "id": id, "passo": v["n"], "total": total, "texto": texto }));
                 }
             }
-            "parou" => { fim = json!({ "estado": "parou", "modo": "mac", "id": id, "passo": v["passo"], "total": total, "texto": v["texto"], "motivo": v["motivo"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
+            "parou" => { fim = json!({ "estado": "parou", "modo": "mac", "id": id, "nome": nome, "bundle": bundle_do_roteiro, "passo": v["passo"], "total": total, "texto": v["texto"], "motivo": v["motivo"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
             "concluido" => { fim = json!({ "estado": "concluido", "modo": "mac", "id": id, "total": total, "ms": v["ms"], "tela": { "app": v["app"], "janela": v["janela"] }, "foto": v["foto"], "criterio": criterio }); break; }
             "erro" => { fim = json!({ "estado": "erro", "modo": "mac", "id": id, "motivo": v["motivo"] }); break; }
             _ => {}
