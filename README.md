@@ -68,6 +68,18 @@ assinar e notarizar no Mac.
   mexer no mouse e teclado. Isso exige a ponte `dnos-node` na VPS e regras
   de segurança próprias.
 
+## Computador inteiro no Windows (0.8.0)
+
+Explorar (Explore e aprenda) e executar roteiros v2 agora existem no Windows, além do Mac.
+O ajudante é `src-tauri/ajudantes/computador-win` (Rust): mesma linha de comando e mesmo JSON do
+`olhar-mac` e do `gravador-mac executar`, então relay, skill e página não mudam. O "bundle" do Mac
+vira o nome do executável (`capcut.exe`). A página sabe o sistema por `__DNOS_DESKTOP__.sistema`
+(`macos` | `windows`); `exploracao` e `roteiroMac` valem para os dois, `gravadorMac` (gravar
+demonstração da máquina toda) continua só no Mac. O CI compila o ajudante antes da casca
+(`release.yml`) e roda uma fumaça com o Bloco de Notas (`verificar.yml`, job `windows`).
+Ficam fora: apps da Loja (UWP), programas como administrador e a gravação por demonstração.
+Detalhes e limites no README do ajudante.
+
 ## Olhar meu computador (0.7.13, fase 2C-1)
 
 No macOS, o menu do chat permite autorizar um agente a consultar uma janela do
