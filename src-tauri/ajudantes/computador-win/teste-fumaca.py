@@ -111,6 +111,19 @@ try:
             print("DEPURAR MENU:")
             for l in d.get("linhas", []):
                 print("   ", l[:200])
+        # Acionar um item de submenu de verdade (o caso do Arquivo › Exportar): Edit › Time/Date insere a data no texto.
+        r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "menu Edit", "caminho": ["Edit"], "listar": True}))
+        print("menu Edit (listar):", json.dumps(r, ensure_ascii=False)[:300])
+        data = next((n for n in r.get("menu", []) if "date" in n.lower()), None)
+        if data:
+            antes = max([len(v) for v in valores(rodar(["--explorar", "notepad.exe"], timeout=40))] + [0])
+            r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "inserir data", "caminho": ["Edit", data]}))
+            conferir("acionar Edit › " + data, r.get("executada") is True, str(r)[:200])
+            time.sleep(0.6)
+            depois = max([len(v) for v in valores(rodar(["--explorar", "notepad.exe"], timeout=40))] + [0])
+            conferir("o item de submenu fez efeito (texto cresceu)", depois > antes, f"{antes} -> {depois}")
+        else:
+            print("sem item de data no menu Edit; acionamento aninhado não testado")
         r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "inexistente", "caminho": ["Nao existe"]}))
         conferir("menu inexistente diz as opções", "menu_nao_encontrado" in str(r.get("motivo", "")), str(r)[:200])
         r = rodar(["--acao"], json.dumps({**base, "tipo": "clique", "descricao": "fora do app", "x": 0.001, "y": 0.001}))
