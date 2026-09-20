@@ -6,7 +6,10 @@ use tauri::{AppHandle,Manager};
 use tokio::sync::mpsc::UnboundedSender;
 use crate::maquina::{self,ReservaDeUso};
 #[cfg(target_os="macos")] const AJUDANTE:&[u8]=include_bytes!("../ajudantes/dnos-olhar-mac");
-#[cfg(not(target_os="macos"))] const AJUDANTE:&[u8]=&[];
+// Windows (0.8.0): o mesmo contrato, escrito em Rust (ajudantes/computador-win). O CI o compila antes da casca.
+#[cfg(windows)] const AJUDANTE:&[u8]=include_bytes!("../ajudantes/dnos-computador-win.exe");
+#[cfg(not(any(target_os="macos",windows)))] const AJUDANTE:&[u8]=&[];
+use crate::maquina::sem_console;
 struct Sessao { id:String,agente:String,nome:String,app_nome:String,bundle:String,ate:u64,autonomia:bool,acoes:u32,leituras:u32,iniciada_em:u64,fase:String,
  cancelada:Arc<AtomicBool>,ocupada:bool,ultima:Option<(String,u64,Value)>,pendente:Option<Value>,resultados:Vec<(String,Value)>,_reserva:ReservaDeUso }
 #[derive(Default)] pub struct Estado { conexao:Option<(u64,UnboundedSender<String>)>,sessao:Option<Sessao>,ultimo_motivo:Option<String> }
@@ -14,8 +17,11 @@ type Compartilhado=Arc<Mutex<Estado>>;
 fn agora()->u64 {crate::gravador::agora_ms() as u64}
 fn uuid(s:&str)->bool {s.len()==36 && s.bytes().all(|c|c.is_ascii_hexdigit()||c==b'-')}
 fn app_permitido(s:&str)->bool {
- !s.is_empty() && s.len()<200 && s.bytes().all(|c|c.is_ascii_alphanumeric()||b".-".contains(&c))
- && !["terminal","iterm","keychain","systempreferences","password","1password","dnos"].iter().any(|x|s.to_lowercase().contains(x))
+ // `_` e espaço existem em nomes de executáveis do Windows ("Adobe Premiere Pro.exe").
+ let baixo=s.to_lowercase();
+ !s.is_empty() && s.len()<200 && s.bytes().all(|c|c.is_ascii_alphanumeric()||b".-_ ".contains(&c))
+ && !["terminal","iterm","keychain","systempreferences","password","1password","dnos","powershell","pwsh","windowsterminal","conhost","regedit","taskmgr","systemsettings","keepass","bitwarden","lastpass","dashlane","enpass","nordpass","mintty"].iter().any(|x|baixo.contains(x))
+ && !["cmd.exe","wt.exe","wsl.exe","bash.exe","mmc.exe","control.exe"].contains(&baixo.as_str())
 }
 fn enviar(g:&Estado,v:Value) {if let Some((_,tx))=&g.conexao {let _=tx.send(v.to_string());}}
 fn encerrar(app:&AppHandle,g:&mut Estado,motivo:&str) {
@@ -119,7 +125,9 @@ fn precisa_aprovar(s:&Sessao,p:&Value)->bool {
  if tipo=="esperar"||(tipo=="menu"&&p["listar"]==true){return false;}
  if !s.autonomia||p["risco"]!="normal"{return true;}
  // Cmd+Delete manda para o Lixo no Finder e apaga em vários apps.
- if tipo=="tecla"{let t=p["tecla"].as_str().unwrap_or("");if p["mods"].as_array().map(|m|m.iter().any(|x|x=="cmd")).unwrap_or(false)&&["backspace","delete"].contains(&t){return true;}}
+ if tipo=="tecla"{let t=p["tecla"].as_str().unwrap_or("");let tem=|n:&str|p["mods"].as_array().map(|m|m.iter().any(|x|x==n)).unwrap_or(false);
+  // Windows: Shift+Delete apaga sem passar pela Lixeira.
+  if (tem("cmd")&&["backspace","delete"].contains(&t))||(tem("shift")&&t=="delete"){return true;}}
  // Defesa adicional: rótulos de ações sensíveis exigem aprovação mesmo que o
  // modelo as tenha classificado como normais. Não substitui revisão semântica.
  let mut rotulo=p["descricao"].as_str().unwrap_or("").to_lowercase();
@@ -213,14 +221,14 @@ pub fn pode_enviar(app:&AppHandle,raw:&str)->bool{let Ok(v)=serde_json::from_str
 fn ajudante(app:&AppHandle,args:&[&str],entrada:Option<Value>,cancelada:&AtomicBool)->Result<Value,String>{
  if AJUDANTE.is_empty(){return Err("sistema_nao_suportado".into());}
  let dir=app.path().app_data_dir().map_err(|_|"pasta_indisponivel")?.join("ajudantes");std::fs::create_dir_all(&dir).map_err(|_|"pasta_indisponivel")?;
- let arq=dir.join(format!("dnos-explorar-mac-{}",app.package_info().version));
+ let arq=dir.join(if cfg!(windows){format!("dnos-computador-win-{}.exe",app.package_info().version)}else{format!("dnos-explorar-mac-{}",app.package_info().version)});
  if std::fs::read(&arq).ok().as_deref()!=Some(AJUDANTE){std::fs::write(&arq,AJUDANTE).map_err(|_|"ajudante_indisponivel")?;#[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&arq,std::fs::Permissions::from_mode(0o700)).map_err(|_|"ajudante_indisponivel")?;}}
  if cancelada.load(Ordering::SeqCst){return Err("pessoa".into());}
- let mut f=Command::new(&arq).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|_|"ajudante_nao_iniciou")?;
+ let mut f=sem_console(Command::new(&arq).args(args)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|_|"ajudante_nao_iniciou")?;
  if let Some(v)=entrada{if let Some(mut i)=f.stdin.take(){let _=i.write_all(v.to_string().as_bytes());}}else{drop(f.stdin.take());}
  let out=f.stdout.take().ok_or("sem_saida")?;let leitor=std::thread::spawn(move||{let mut b=vec![];out.take(3_000_001).read_to_end(&mut b).map(|_|b)});let inicio=Instant::now();
  let erro=loop{if cancelada.load(Ordering::SeqCst){break Some("pessoa");}if inicio.elapsed()>Duration::from_secs(10){break Some("ajudante_sem_resposta");}match f.try_wait(){Ok(Some(s))=>break if s.success(){None}else{Some("ajudante_falhou")},Err(_)=>break Some("ajudante_falhou"),_=>{}}std::thread::sleep(Duration::from_millis(20));};
- let _=f.kill();let _=f.wait();if erro.is_some() && args==["--acao"] {let _=Command::new(&arq).arg("--soltar").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();}let b=leitor.join().map_err(|_|"saida_indisponivel")?.map_err(|_|"saida_indisponivel")?;
+ let _=f.kill();let _=f.wait();if erro.is_some() && args==["--acao"] {let _=sem_console(Command::new(&arq).arg("--soltar")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();}let b=leitor.join().map_err(|_|"saida_indisponivel")?.map_err(|_|"saida_indisponivel")?;
  if let Some(e)=erro{return Err(e.into());}if b.len()>3_000_000{return Err("leitura_muito_grande".into());}serde_json::from_slice(&b).map_err(|_|"saida_invalida".into())
 }
 pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(Estado::default())));let h=app.clone();std::thread::spawn(move||loop{std::thread::sleep(Duration::from_millis(200));if let Ok(mut g)=h.state::<Compartilhado>().lock(){if g.sessao.as_ref().map(|s|s.ate<=agora()).unwrap_or(false){encerrar(&h,&mut g,"tempo_esgotado");}else if let Some(s)=g.sessao.as_mut(){if s.fase=="aguardando"&&agora()-s.iniciada_em>60_000{s.fase="demorado".into();barra(&h,s);}}}});}
@@ -242,4 +250,9 @@ pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(
   assert!(!ok(json!({"tipo":"esperar","descricao":"x","risco":"normal","ms":60000})));
  }
  #[test]fn nao_oferece_terminais_ou_cofres(){assert!(app_permitido("com.lemon.lvoverseas"));assert!(!app_permitido("com.apple.Terminal"));assert!(!app_permitido("com.apple.keychainaccess"));}
+ #[test]fn executaveis_do_windows(){
+  assert!(app_permitido("CapCut.exe"));assert!(app_permitido("Adobe Premiere Pro.exe"));assert!(app_permitido("acro_rd32.exe"));assert!(app_permitido("explorer.exe"));
+  for barrado in ["cmd.exe","PowerShell.exe","pwsh.exe","WindowsTerminal.exe","wt.exe","regedit.exe","KeePassXC.exe","Bitwarden.exe","SystemSettings.exe","dnos-desktop.exe"] {assert!(!app_permitido(barrado),"{barrado} deveria ser barrado");}
+  assert!(!app_permitido("app;calc.exe"));assert!(!app_permitido("a\\b.exe"));
+ }
 }

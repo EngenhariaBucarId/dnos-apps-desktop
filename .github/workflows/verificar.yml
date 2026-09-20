@@ -1,5 +1,6 @@
 # Verificação sem release: em qualquer branch que não seja tag, compila o
-# ajudante Swift e roda cargo check + cargo test no Mac. É o laço de feedback
+# ajudante Swift e roda cargo check + cargo test no Mac; no Windows, compila o
+# ajudante em Rust, roda os testes e a fumaça com o Bloco de Notas. É o laço de feedback
 # para quem não consegue linkar localmente (CLT antigas).
 name: verificar
 on:
@@ -23,3 +24,33 @@ jobs:
         run: cd src-tauri && cargo check 2>&1 | tail -40
       - name: cargo test
         run: cd src-tauri && cargo test 2>&1 | tail -40
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri/ajudantes/computador-win
+      - name: Ajudante do Windows: testes da lógica
+        working-directory: src-tauri/ajudantes/computador-win
+        run: cargo test
+      - name: Ajudante do Windows: compilar
+        working-directory: src-tauri/ajudantes/computador-win
+        run: cargo build --release
+      - name: Ajudante responde
+        run: src-tauri/ajudantes/computador-win/target/release/dnos-computador-win.exe --permissoes
+      # A casca no Windows embute o ajudante por include_bytes!: checa que compila com ele.
+      - name: Casca no Windows: cargo check
+        shell: bash
+        run: |
+          cp src-tauri/ajudantes/computador-win/target/release/dnos-computador-win.exe src-tauri/ajudantes/dnos-computador-win.exe
+          cd src-tauri && cargo check 2>&1 | tail -40
+      - name: Casca no Windows: cargo test
+        shell: bash
+        run: cd src-tauri && cargo test 2>&1 | tail -40
+      # Fumaça de verdade: abre o Bloco de Notas, observa, digita, executa um roteiro.
+      # Não bloqueia o resto enquanto o ajudante é novo; o resultado fica no log.
+      - name: Fumaça no Bloco de Notas
+        continue-on-error: true
+        run: python src-tauri/ajudantes/computador-win/teste-fumaca.py

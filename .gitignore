@@ -10,3 +10,6 @@ src-tauri/gen/schemas/
 src-tauri/ajudantes/dnos-gravador-mac
 
 src-tauri/ajudantes/dnos-olhar-mac
+# ajudante do Windows compilado no CI (fonte: src-tauri/ajudantes/computador-win)
+src-tauri/ajudantes/dnos-computador-win.exe
+src-tauri/ajudantes/computador-win/target/
