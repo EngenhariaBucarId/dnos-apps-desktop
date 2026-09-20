@@ -544,3 +544,65 @@ pub fn instalar(app: &AppHandle) {
         }
     });
 }
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    /// O nome na sala vale para QUALQUER agente — não é do Milo nem da Cora.
+    #[test]
+    fn cada_agente_entra_com_o_proprio_nome() {
+        for (agente, esperado) in [
+            ("Cora", "Cora - dn.ia"),
+            ("Milo", "Milo - dn.ia"),
+            ("Lia", "Lia - dn.ia"),
+            ("Radar", "Radar - dn.ia"),
+            ("Ana Paula", "Ana Paula - dn.ia"),
+        ] {
+            assert_eq!(nome_na_sala(agente), esperado);
+        }
+    }
+
+    /// Sem nome o campo não pode ficar vazio: o Meet não deixa entrar.
+    #[test]
+    fn sem_nome_entra_como_agente_da_dnia() {
+        assert_eq!(nome_na_sala(""), "Agente dn.ia");
+        assert_eq!(nome_na_sala("   "), "Agente dn.ia");
+    }
+
+    /// O nome vai para dentro de um texto em JavaScript: aspas e quebras de
+    /// linha ali quebrariam o roteiro inteiro.
+    #[test]
+    fn nome_nao_quebra_o_roteiro() {
+        let sujo = nome_na_sala("A\"l'i\\a\nBot");
+        assert!(!sujo.contains('"') && !sujo.contains('\'') && !sujo.contains('\\') && !sujo.contains('\n'));
+        assert_eq!(sujo, "AliaBot - dn.ia");
+    }
+
+    /// Nome enorme não vira uma linha gigante na sala.
+    #[test]
+    fn nome_enorme_e_cortado() {
+        let n = nome_na_sala(&"a".repeat(120));
+        assert_eq!(n.len(), 40 + " - dn.ia".len());
+    }
+
+    /// Só link do Meet entra; o resto é recusado antes de abrir o Chrome.
+    #[test]
+    fn so_aceita_link_do_meet() {
+        assert_eq!(link_de_meet("meet.google.com/abc-defg-hij").as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+        assert_eq!(link_de_meet("  https://meet.google.com/abc  ").as_deref(), Some("https://meet.google.com/abc"));
+        assert!(link_de_meet("https://zoom.us/j/123").is_none());
+        assert!(link_de_meet("https://meet.google.com.falso.com/x").is_none());
+        assert!(link_de_meet("").is_none());
+    }
+
+    /// O nome do agente vira nome de pasta do perfil: sem barras, sem surpresa.
+    #[test]
+    fn pasta_do_agente_e_segura() {
+        assert_eq!(pasta_do_agente("Cora"), "cora");
+        assert_eq!(pasta_do_agente("Ana Paula"), "ana-paula");
+        assert_eq!(pasta_do_agente("../../etc/passwd"), "etc-passwd");
+        assert_eq!(pasta_do_agente(""), "agente");
+        assert_eq!(pasta_do_agente("///"), "agente");
+    }
+}
