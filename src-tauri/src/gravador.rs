@@ -350,7 +350,7 @@ mod testes_demonstracao {
 /// requisição crua basta para o Chrome. Lê pelo Content-Length: o servidor
 /// do DevTools NÃO fecha a conexão (ignora `Connection: close`), e esperar
 /// EOF travava até o Chrome morrer — foi o "reset by peer" de 06/09.
-pub async fn url_do_browser(porta: u16) -> Result<String, String> {
+pub(crate) async fn url_do_browser(porta: u16) -> Result<String, String> {
     let mut tcp = TcpStream::connect(("127.0.0.1", porta)).await.map_err(|e| format!("Chrome não respondeu na porta {porta}: {e}"))?;
     tcp.write_all(format!("GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{porta}\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(|e| e.to_string())?;
     let mut buf: Vec<u8> = Vec::new();

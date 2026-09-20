@@ -139,7 +139,7 @@ pub fn parar(app: &AppHandle, estado: &Compartilhado, motivo: &str) {
 
 /// Binário do Chrome (ou parente) na máquina, na ordem em que a pessoa mais
 /// provavelmente o tem. Chromium-based basta: o OpenClaw fala CDP.
-fn binario_do_chrome() -> Option<std::path::PathBuf> {
+pub(crate) fn binario_do_chrome() -> Option<std::path::PathBuf> {
     let candidatos: Vec<std::path::PathBuf> = if cfg!(target_os = "macos") {
         vec![
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".into(),
