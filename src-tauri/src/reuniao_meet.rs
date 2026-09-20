@@ -65,6 +65,14 @@ fn pasta_do_agente(nome: &str) -> String {
     if limpo.is_empty() { "agente".into() } else { limpo.chars().take(40).collect() }
 }
 
+/// Como o agente se apresenta na sala quando entra como convidado. Deixa claro
+/// que é um agente da dn.ia, e não uma pessoa — mesma leitura de quem entra
+/// logado, onde o nome vem da conta ("Milo - dnia").
+fn nome_na_sala(agente: &str) -> String {
+    let limpo: String = agente.trim().chars().filter(|c| !"\"'\\\n\r".contains(*c)).take(40).collect();
+    if limpo.is_empty() { "Agente dn.ia".into() } else { format!("{limpo} - dn.ia") }
+}
+
 fn link_de_meet(link: &str) -> Option<String> {
     let l = link.trim();
     let l = if l.starts_with("http") { l.to_string() } else { format!("https://{l}") };
@@ -184,6 +192,22 @@ const ROTEIRO: &str = r#"
   if (micLigado) porRotulo(/^Desativar microfone|^Turn off microphone/i).click();
   if (camLigada) porRotulo(/^Desativar câmera|^Turn off camera/i).click();
 
+  // Sem conta logada, o Meet entra como CONVIDADO e exige um nome — sem ele o
+  // botão de entrar fica desligado (visto em 20/09 com o perfil da Cora, que
+  // não tem conta). Com conta, este campo nem existe.
+  const campoNome = [...document.querySelectorAll('input[type=text],input:not([type])')].find((i) => {
+    const r = (i.getAttribute('aria-label') || i.getAttribute('placeholder') || '').trim();
+    return /^(Seu nome|Your name)$/i.test(r) && i.getBoundingClientRect().height > 0;
+  });
+  if (campoNome && !campoNome.value.trim()) {
+    // O React não vê `input.value = x`: escreve pelo setter nativo e avisa.
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(campoNome, '__NOME_DO_AGENTE__');
+    campoNome.dispatchEvent(new Event('input', { bubbles: true }));
+    campoNome.dispatchEvent(new Event('change', { bubbles: true }));
+    return JSON.stringify({ estado: 'entrando', nomeDigitado: true });
+  }
+
   const esperando = /Aguarde até que|Asking to be let in|Pedindo para entrar/i.test(texto);
   const legendasBotao = porRotulo(/^Ativar legendas|^Turn on captions/i);
   const legendasLigadas = !!porRotulo(/^Desativar legendas|^Turn off captions/i);
@@ -200,7 +224,12 @@ const ROTEIRO: &str = r#"
 
   if (!naSala && !esperando && !micLigado && !camLigada) {
     const entrar = porTexto(/^(Pedir para participar|Participar agora|Ask to join|Join now)$/i);
-    if (entrar) { entrar.click(); return JSON.stringify({ estado: 'pedindo' }); }
+    if (entrar) {
+      // Recém-preenchido o nome, o botão leva um instante para ligar.
+      if (entrar.disabled || entrar.getAttribute('aria-disabled') === 'true') return JSON.stringify({ estado: 'entrando', aguardandoBotao: true });
+      entrar.click();
+      return JSON.stringify({ estado: 'pedindo' });
+    }
   }
   if (esperando) return JSON.stringify({ estado: 'aguardando' });
   if (!naSala) return JSON.stringify({ estado: 'entrando', mic: micLigado, cam: camLigada });
@@ -355,6 +384,9 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
         return emitir(&app, json!({ "estado": "erro", "motivo": "o Chrome do agente caiu ao abrir" }));
     }
 
+    // Nome que a sala vê quando o agente entra como convidado (perfil sem conta).
+    let roteiro_com_nome = ROTEIRO.replace("__NOME_DO_AGENTE__", &nome_na_sala(&agente));
+
     let mut relogio = tokio::time::interval(std::time::Duration::from_millis(500));
     loop {
         tokio::select! {
@@ -374,7 +406,7 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
                         pedidos_de_idioma.insert(rid);
                         if tx.send(Message::Text(m.to_string().into())).await.is_err() { motivo_fim = "o Chrome do agente fechou".into(); break; }
                     }
-                    let (rid, m) = mandar("Runtime.evaluate", json!({ "expression": ROTEIRO, "returnByValue": true, "userGesture": true }), Some(&sid), &mut prox_id);
+                    let (rid, m) = mandar("Runtime.evaluate", json!({ "expression": roteiro_com_nome, "returnByValue": true, "userGesture": true }), Some(&sid), &mut prox_id);
                     pedidos_do_roteiro.insert(rid);
                     if pedidos_do_roteiro.len() > 40 { pedidos_do_roteiro.clear(); pedidos_do_roteiro.insert(rid); }
                     if tx.send(Message::Text(m.to_string().into())).await.is_err() { motivo_fim = "o Chrome do agente fechou".into(); break; }
