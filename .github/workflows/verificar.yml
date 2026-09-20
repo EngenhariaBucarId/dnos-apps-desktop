@@ -46,9 +46,9 @@ jobs:
         run: |
           cp src-tauri/ajudantes/computador-win/target/release/dnos-computador-win.exe src-tauri/ajudantes/dnos-computador-win.exe
           cd src-tauri && cargo check 2>&1 | tail -40
-      - name: "Casca no Windows - cargo test"
-        shell: bash
-        run: cd src-tauri && cargo test 2>&1 | tail -40
+      # (cargo test da casca no Windows não roda: o executável de teste do Tauri não
+      # carrega sem o manifesto do app — STATUS_ENTRYPOINT_NOT_FOUND, sem relação com o ajudante.
+      # Os testes da casca rodam no job do Mac; os do ajudante, acima.)
       # Fumaça de verdade: abre o Bloco de Notas, observa, digita, executa um roteiro.
       # Não bloqueia o resto enquanto o ajudante é novo; o resultado fica no log.
       - name: Fumaça no Bloco de Notas
