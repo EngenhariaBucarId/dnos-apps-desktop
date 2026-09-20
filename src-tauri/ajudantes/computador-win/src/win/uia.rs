@@ -52,6 +52,12 @@ fn valor(el: &IUIAutomationElement) -> String {
             .unwrap_or_default()
     }
 }
+fn classe(el: &IUIAutomationElement) -> String {
+    unsafe { el.CurrentClassName().map(|b| b.to_string()).unwrap_or_default() }
+}
+fn pid_de(el: &IUIAutomationElement) -> i32 {
+    unsafe { el.CurrentProcessId().unwrap_or(0) }
+}
 fn ajuda(el: &IUIAutomationElement) -> String {
     unsafe { el.CurrentHelpText().map(|b| b.to_string()).unwrap_or_default() }
 }
@@ -185,6 +191,98 @@ impl Uia {
         itens
     }
 
+    /// Itens do submenu que acabou de abrir. No Win32 o pop-up (`#32768`) é uma janela
+    /// própria: aparece como filho do item, como um "Menu" dentro da janela do app
+    /// ou como janela de nível superior da mesma aplicação, conforme o app. Tenta os três.
+    fn submenu_de(&self, item: &IUIAutomationElement, janela: &IUIAutomationElement, pid: i32) -> Vec<IUIAutomationElement> {
+        let direto = self.itens_de_menu(item);
+        if !direto.is_empty() {
+            return direto;
+        }
+        // Dentro da janela do app: qualquer "Menu" ou pop-up que não seja a barra.
+        let mut fila: Vec<(IUIAutomationElement, u32)> = vec![(janela.clone(), 0)];
+        let mut i = 0;
+        while i < fila.len() && fila.len() < 900 {
+            let (el, nivel) = fila[i].clone();
+            i += 1;
+            if (tipo(&el) == MENU || classe(&el) == "#32768") && !fila.is_empty() {
+                let v = self.itens_de_menu(&el);
+                if !v.is_empty() {
+                    return v;
+                }
+            }
+            if nivel < 6 {
+                for f in self.filhos(&el, 60) {
+                    fila.push((f, nivel + 1));
+                }
+            }
+        }
+        // Janelas de nível superior da mesma aplicação (o pop-up mais recente vem primeiro).
+        if let Ok(area) = unsafe { self.a.GetRootElement() } {
+            for topo in self.filhos(&area, 300) {
+                if pid_de(&topo) != pid {
+                    continue;
+                }
+                if tipo(&topo) == MENU || classe(&topo) == "#32768" {
+                    let v = self.itens_de_menu(&topo);
+                    if !v.is_empty() {
+                        return v;
+                    }
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Diagnóstico (só para desenvolvimento e CI): abre o menu do topo `nome` e descreve o
+    /// que o Windows expõe — a estrutura muda entre apps e versões do Windows.
+    pub fn depurar_menu(&self, hwnd: isize, nome_menu: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(raiz) = self.da_janela(hwnd) else { return vec!["sem janela".into()] };
+        let Some(barra) = self.achar_barra(&raiz) else { return vec!["sem barra de menus".into()] };
+        let itens = self.itens_de_menu(&barra);
+        let alvo = logica::limpo(nome_menu);
+        let Some(item) = itens.iter().find(|e| logica::limpo(&nome(e)) == alvo) else { return vec![format!("menu {nome_menu} não achado")] };
+        out.push(format!("aberto={}", self.abrir(item)));
+        sleep(Duration::from_millis(400));
+        let linha = |n: u32, e: &IUIAutomationElement| format!("{}{} [{}] classe={} pid={} nome={:?}", "  ".repeat(n as usize), tipo(e), logica::papel_uia(tipo(e)), classe(e), pid_de(e), nome(e));
+        out.push("— filhos do item:".into());
+        for f in self.filhos(item, 20) {
+            out.push(linha(1, &f));
+        }
+        out.push("— janela do app (Menu/MenuItem/#32768 até nível 6):".into());
+        let mut fila: Vec<(IUIAutomationElement, u32)> = vec![(raiz.clone(), 0)];
+        let mut i = 0;
+        while i < fila.len() && fila.len() < 900 {
+            let (el, nivel) = fila[i].clone();
+            i += 1;
+            let t = tipo(&el);
+            if t == MENU || t == MENU_ITEM || classe(&el) == "#32768" {
+                out.push(linha(nivel, &el));
+            }
+            if nivel < 6 {
+                for f in self.filhos(&el, 60) {
+                    fila.push((f, nivel + 1));
+                }
+            }
+        }
+        out.push("— topo da área de trabalho:".into());
+        if let Ok(area) = unsafe { self.a.GetRootElement() } {
+            for topo in self.filhos(&area, 60) {
+                out.push(linha(1, &topo));
+                if classe(&topo) == "#32768" || tipo(&topo) == MENU {
+                    for f in self.filhos(&topo, 20) {
+                        out.push(linha(2, &f));
+                    }
+                }
+            }
+        }
+        super::entrada::escape();
+        sleep(Duration::from_millis(80));
+        super::entrada::escape();
+        out
+    }
+
     fn abrir(&self, item: &IUIAutomationElement) -> bool {
         unsafe {
             if let Ok(p) = item.GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(UIA_ExpandCollapsePatternId) {
@@ -217,6 +315,7 @@ impl Uia {
         }
         let mut atual: Option<IUIAutomationElement> = None;
         let mut abriu = false;
+        let pid = pid_de(&raiz);
         for (i, quer) in caminho.iter().enumerate() {
             let alvo = logica::limpo(quer);
             let achado = itens
@@ -244,8 +343,8 @@ impl Uia {
                     return Err("menu_nao_respondeu".into());
                 }
                 abriu = true;
-                sleep(Duration::from_millis(250));
-                itens = self.itens_de_menu(&item);
+                sleep(Duration::from_millis(300));
+                itens = self.submenu_de(&item, &raiz, pid);
             }
         }
         if listar {

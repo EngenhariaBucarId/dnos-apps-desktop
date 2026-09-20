@@ -40,6 +40,8 @@ pub fn principal() {
             imprimir(olhar::olhar(&exe, Some(pedido)));
         }
         ["--explorar", exe] | ["--app", exe] if !exe.is_empty() => imprimir(olhar::olhar(exe, None)),
+        // Diagnóstico de desenvolvimento: o que o Windows expõe ao abrir um menu do app.
+        ["--depurar-menu", exe, menu] => imprimir(olhar::depurar_menu(exe, menu)),
         ["executar", ..] => {
             let caminho = valor_de(&args, "--roteiro").unwrap_or("");
             let ignorar = valor_de(&args, "--ignorar").unwrap_or("");

@@ -269,3 +269,13 @@ fn agir(pedido: &Value, saida: &Value, janela: &Janela, captura_r: Ret, pids: &[
     }
     json!({ "ok": true, "executada": true })
 }
+
+/// Só para desenvolvimento e CI: descreve o que a Automação de Interface expõe ao abrir um menu.
+pub fn depurar_menu(exe: &str, menu: &str) -> Value {
+    let exe_l = exe.to_lowercase();
+    let Some(j) = janelas::principal_do_exe(&exe_l) else { return recusa("app_nao_aberto") };
+    janelas::ativar(hwnd_de(j.hwnd));
+    entrada::dormir(500);
+    let Some(u) = Uia::nova() else { return recusa("acessibilidade_nao_autorizada") };
+    json!({ "ok": true, "linhas": u.depurar_menu(j.hwnd, menu) })
+}

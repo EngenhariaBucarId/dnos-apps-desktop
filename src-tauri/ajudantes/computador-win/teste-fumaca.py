@@ -105,6 +105,12 @@ try:
         # Um nível abaixo: abre o menu, lista e fecha (só informativo: a estrutura muda entre versões do Bloco de Notas).
         r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "menu Format", "caminho": ["Format"], "listar": True}))
         print("menu Format (listar):", json.dumps(r, ensure_ascii=False)[:400])
+        conferir("menu Format lista o submenu", isinstance(r.get("menu"), list) and len(r["menu"]) > 0, str(r)[:200])
+        if not r.get("menu"):
+            d = rodar(["--depurar-menu", "notepad.exe", "Format"])
+            print("DEPURAR MENU:")
+            for l in d.get("linhas", []):
+                print("   ", l[:200])
         r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "inexistente", "caminho": ["Nao existe"]}))
         conferir("menu inexistente diz as opções", "menu_nao_encontrado" in str(r.get("motivo", "")), str(r)[:200])
         r = rodar(["--acao"], json.dumps({**base, "tipo": "clique", "descricao": "fora do app", "x": 0.001, "y": 0.001}))
