@@ -15,6 +15,19 @@ use tauri::{AppHandle, Emitter};
 
 use crate::meu_chrome;
 
+/// O que muda entre "fale para anotar" (trechos curtos, uma nota cada) e
+/// "reunião" (trechos longos, transcrição corrida): tamanho do corte, evento
+/// de saída e se a escuta conta como atividade da execução na máquina.
+#[derive(Clone, Copy)]
+pub struct Ajustes {
+    pub evento_audio: &'static str,
+    /// Teto de um trecho; a fala é cortada no primeiro silêncio depois disso.
+    pub maximo_ms: u64,
+    pub escuta_na_maquina: bool,
+}
+pub const NOTA: Ajustes = Ajustes { evento_audio: "dnos://gravador/audio", maximo_ms: 15_000, escuta_na_maquina: true };
+pub const REUNIAO: Ajustes = Ajustes { evento_audio: "dnos://reuniao/audio", maximo_ms: 45_000, escuta_na_maquina: false };
+
 pub struct Voz {
     parar: Option<std::sync::mpsc::Sender<()>>,
     fim: Option<std::sync::mpsc::Receiver<()>>,
@@ -31,7 +44,10 @@ fn agora_ms() -> u64 {
 }
 
 /// Abre o microfone numa thread própria (o cpal não é async). Erros só vão para o diário.
-pub fn ligar(app: &AppHandle, id: &str) {
+pub fn ligar(app: &AppHandle, id: &str) { ligar_com(app, id, NOTA) }
+
+/// Como `ligar`, com o perfil de corte escolhido (nota de voz ou reunião).
+pub fn ligar_com(app: &AppHandle, id: &str, ajustes: Ajustes) {
     use tauri::Manager;
     let Some(estado) = app.try_state::<Compartilhado>() else { return };
     let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -40,8 +56,8 @@ pub fn ligar(app: &AppHandle, id: &str) {
     let id = id.to_string();
     let h = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) = capturar(&h, rx, &id) { meu_chrome::registrar(&h, &format!("voz: {e}")); }
-        let _ = h.emit("dnos://gravador/audio-fim", json!({ "id": id }));
+        if let Err(e) = capturar(&h, rx, &id, ajustes) { meu_chrome::registrar(&h, &format!("voz: {e}")); }
+        let _ = h.emit(if ajustes.escuta_na_maquina { "dnos://gravador/audio-fim" } else { "dnos://reuniao/audio-fim" }, json!({ "id": id }));
         let _ = fim_tx.send(());
     });
 }
@@ -100,7 +116,7 @@ enum Fim { Parou, SemSinal }
 
 /// Tenta o microfone padrão e, se ele só entregar silêncio absoluto, o próximo
 /// dispositivo real da lista. A página recebe qual ficou e se há sinal.
-fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>, id: &str) -> Result<(), String> {
+fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>, id: &str, ajustes: Ajustes) -> Result<(), String> {
     let host = cpal::default_host();
     let mut cands: Vec<cpal::Device> = Vec::new();
     if let Some(d) = host.default_input_device() { cands.push(d); }
@@ -117,7 +133,7 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>, id: &str) -> 
     for (i, dev) in cands.into_iter().enumerate() {
         let nome = dev.name().unwrap_or_else(|_| "?".into());
         let pode_trocar = i + 1 < total;
-        match capturar_com(app, &parar, dev, &nome, pode_trocar, id) {
+        match capturar_com(app, &parar, dev, &nome, pode_trocar, id, ajustes) {
             Ok(Fim::Parou) => return Ok(()),
             Ok(Fim::SemSinal) => { meu_chrome::registrar(app, &format!("voz: {nome} só entregou silêncio absoluto; tentando o próximo microfone")); }
             Err(e) => { meu_chrome::registrar(app, &format!("voz: {nome}: {e}; tentando o próximo")); }
@@ -128,7 +144,7 @@ fn capturar(app: &AppHandle, parar: std::sync::mpsc::Receiver<()>, id: &str) -> 
     Err("nenhum microfone entregou áudio".into())
 }
 
-fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpal::Device, nome_dev: &str, pode_trocar: bool, id: &str) -> Result<Fim, String> {
+fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpal::Device, nome_dev: &str, pode_trocar: bool, id: &str, ajustes: Ajustes) -> Result<Fim, String> {
     let conf = dev.default_input_config().map_err(|e| format!("config do microfone: {e}"))?;
     let taxa = conf.sample_rate().0 as usize;
     let canais = conf.channels() as usize;
@@ -167,14 +183,16 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
     let avisar = |falando: bool| {
         let _ = app.emit("dnos://gravador/ouvindo", json!({ "falando": falando }));
         crate::barra::mesclar(app, json!({ "ouvindo": falando }));
-        crate::maquina::atualizar_escuta(app, falando);
+        // Na reunião ninguém está executando passo nenhum: a escuta não é
+        // atividade de execução e não deve mexer no relógio da máquina.
+        if ajustes.escuta_na_maquina { crate::maquina::atualizar_escuta(app, falando); }
     };
     loop {
         if parar.try_recv().is_ok() {
             drop(stream);
             if em_fala {
                 if let Ok(mut restante) = acumulado.lock() { fala.extend(std::mem::take(&mut *restante)); }
-                if fala.len() >= taxa / 2 { enviar(app, &fala, taxa, inicio_fala, id); }
+                if fala.len() >= taxa / 2 { enviar(app, &fala, taxa, inicio_fala, id, ajustes); }
             }
             avisar(false);
             meu_chrome::registrar(app, "voz: microfone fechado"); return Ok(Fim::Parou);
@@ -210,8 +228,8 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
             else if em_fala { silencio_ms += 100; }
             if em_fala { fala.extend_from_slice(bloco); }
             let dur_ms = (fala.len() as u64 * 1000) / taxa as u64;
-            if em_fala && ((silencio_ms >= 800 && dur_ms >= 1000) || dur_ms >= 15000) {
-                if dur_ms >= 1000 { enviar(app, &fala, taxa, inicio_fala, id); }
+            if em_fala && ((silencio_ms >= 800 && dur_ms >= 1000) || dur_ms >= ajustes.maximo_ms) {
+                if dur_ms >= 1000 { enviar(app, &fala, taxa, inicio_fala, id, ajustes); }
                 fala.clear(); em_fala = false; silencio_ms = 0; avisar(false);
             }
             if em_fala && silencio_ms >= 800 && dur_ms < 1000 { fala.clear(); em_fala = false; silencio_ms = 0; avisar(false); }
@@ -220,7 +238,7 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
 }
 
 /// Reamostra para 16 kHz mono, empacota em WAV e manda para a página transcrever.
-fn enviar(app: &AppHandle, amostras: &[f32], taxa: usize, hora: u64, id: &str) {
+fn enviar(app: &AppHandle, amostras: &[f32], taxa: usize, hora: u64, id: &str, ajustes: Ajustes) {
     let alvo = 16000usize;
     let passo = taxa as f32 / alvo as f32;
     let n = (amostras.len() as f32 / passo) as usize;
@@ -237,7 +255,7 @@ fn enviar(app: &AppHandle, amostras: &[f32], taxa: usize, hora: u64, id: &str) {
     }
     let b64 = base64_simples(&cur.into_inner());
     meu_chrome::registrar(app, &format!("voz: trecho de {:.1} s enviado para transcrever ({} KB)", n as f32 / alvo as f32, b64.len() / 1024));
-    let _ = app.emit("dnos://gravador/audio", json!({ "id": id, "wav_base64": b64, "hora": hora, "segundos": n as f32 / alvo as f32 }));
+    let _ = app.emit(ajustes.evento_audio, json!({ "id": id, "wav_base64": b64, "hora": hora, "segundos": n as f32 / alvo as f32 }));
 }
 
 fn base64_simples(d: &[u8]) -> String {

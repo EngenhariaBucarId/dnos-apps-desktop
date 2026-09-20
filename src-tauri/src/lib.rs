@@ -21,6 +21,7 @@ mod exploracao;
 #[cfg(test)]
 mod olhar_acl;
 mod meu_chrome;
+mod reuniao;
 mod roteiro;
 mod voz;
 
@@ -164,7 +165,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_GRAVADOR_MAC__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_GRAVADOR_MAC__ };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_GRAVADOR_MAC__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_GRAVADOR_MAC__ };
 })();
 "#;
 
@@ -173,7 +174,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_GRAVADOR_MAC__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_GRAVADOR_MAC__ });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_GRAVADOR_MAC__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_GRAVADOR_MAC__ });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -380,6 +381,7 @@ pub fn run() {
             exploracao::instalar(app.handle());
             // Barra dentro do Chrome da pessoa e voz para notas.
             barra::instalar(app.handle());
+            reuniao::instalar(app.handle());
             voz::instalar(app.handle());
             // Roteiro: executa os passos mecânicos de uma habilidade direto no Chrome da pessoa.
             roteiro::instalar(app.handle());

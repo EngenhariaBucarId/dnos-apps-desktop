@@ -192,7 +192,7 @@ pub fn reservar_uso(app: &AppHandle, modo: &'static str) -> Result<ReservaDeUso,
     {
         let mut g = estado.lock().map_err(|_| "controle do computador indisponível".to_string())?;
         if let Some(atual) = g.modo {
-            let fazendo = if atual == "gravando" { "uma gravação" } else if atual == "olhando" { "uma observação" } else { "uma execução" };
+            let fazendo = if atual == "gravando" { "uma gravação" } else if atual == "olhando" { "uma observação" } else if atual == "reuniao" { "uma reunião" } else { "uma execução" };
             return Err(format!("o computador já está ocupado com {fazendo}"));
         }
         g.modo = Some(modo);
