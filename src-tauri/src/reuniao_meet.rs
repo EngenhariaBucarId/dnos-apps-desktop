@@ -85,6 +85,11 @@ fn abrir_chrome(app: &AppHandle, agente: &str, link: &str) -> Result<Child, Stri
         .arg(format!("--user-data-dir={}", dados.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
+        // Mudo, sempre: a pessoa já ouve a reunião pelo Chrome dela. Sem isto o
+        // som saía duas vezes (e a própria voz voltava com atraso). As legendas
+        // vêm do servidor do Meet, não do áudio que toca aqui — silenciar não
+        // tira nada da transcrição.
+        .arg("--mute-audio")
         .arg("--new-window")
         .arg(link)
         .stdin(Stdio::null())
@@ -113,15 +118,25 @@ async fn esperar_porta() -> bool {
 
 /// O roteiro dentro da página do Meet. Roda a cada volta e é idempotente:
 /// só clica no que ainda precisa de clique, e conta o que está vendo.
+///
+/// Os rótulos vêm da tela real do Meet, lida em 20/09 com o Chrome do Milo.
+/// Dois detalhes que custaram descobrir: o Meet rotula microfone/câmera/legendas
+/// com a AÇÃO ("Desativar microfone" = está ligado), e alguns botões — como o
+/// de pessoas — não têm `aria-label`: o nome vem de `aria-labelledby`.
 const ROTEIRO: &str = r#"
 (() => {
   const botoes = () => [...document.querySelectorAll('button,[role=button]')];
+  const nomeDe = (b) => {
+    const direto = (b.getAttribute('aria-label') || '').trim();
+    if (direto) return direto;
+    const ids = (b.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+    return ids.map((i) => (document.getElementById(i) || {}).textContent || '').join(' ').trim();
+  };
   const porRotulo = (re) => botoes().find((b) => re.test(b.getAttribute('aria-label') || ''));
   const porTexto = (re) => botoes().find((b) => re.test((b.innerText || '').trim()));
   const texto = document.body.innerText || '';
 
-  // Microfone e câmera: o Meet rotula com a AÇÃO, então "Desativar microfone"
-  // significa que ele está LIGADO. Desligar antes de entrar não é opcional.
+  // Microfone e câmera: desligar antes de entrar não é opcional.
   const micLigado = !!porRotulo(/^Desativar microfone|^Turn off microphone/i);
   const camLigada = !!porRotulo(/^Desativar câmera|^Turn off camera/i);
   if (micLigado) porRotulo(/^Desativar microfone|^Turn off microphone/i).click();
@@ -131,6 +146,15 @@ const ROTEIRO: &str = r#"
   const legendasBotao = porRotulo(/^Ativar legendas|^Turn on captions/i);
   const legendasLigadas = !!porRotulo(/^Desativar legendas|^Turn off captions/i);
   const naSala = legendasLigadas || !!legendasBotao;
+
+  // Telas em que não há mais o que fazer: melhor dizer do que ficar esperando.
+  if (!naSala) {
+    if (/pedido para participar foi negado|negou (sua|seu|o seu)|denied your request|Você não pode participar d|You can.t join this/i.test(texto)) return JSON.stringify({ estado: 'negado' });
+    if (/Você saiu da reunião|Você foi removido|reunião foi encerrada|You left the meeting|You.ve been removed|meeting has ended/i.test(texto)) return JSON.stringify({ estado: 'encerrada' });
+    // Depois da tela de saída, o Meet volta sozinho para a tela inicial (achado em
+    // 20/09: sem isto o agente ficava "entrando" até o teto de 2 horas).
+    if (/^\/(home|landing)?\/?$/.test(location.pathname)) return JSON.stringify({ estado: 'encerrada' });
+  }
 
   if (!naSala && !esperando && !micLigado && !camLigada) {
     const entrar = porTexto(/^(Pedir para participar|Participar agora|Ask to join|Join now)$/i);
@@ -143,11 +167,69 @@ const ROTEIRO: &str = r#"
   if (legendasBotao) legendasBotao.click();
   const painel = document.querySelector('[role=region][aria-label*=egenda]')
     || document.querySelector('[role=region][aria-label*=aption]');
+
+  // Quantas pessoas: o botão "Pessoas" mostra o número (o nome vem de aria-labelledby).
+  let pessoas = null;
+  for (const b of botoes()) {
+    if (/^(Pessoas|People)$/i.test(nomeDe(b))) {
+      const t = (b.innerText || '').trim();
+      if (/^\d+$/.test(t)) { pessoas = parseInt(t, 10); break; }
+    }
+  }
   return JSON.stringify({
     estado: 'na-reuniao',
     legendas: painel ? painel.innerText : '',
-    semPainel: !painel,
+    // O painel só existe DEPOIS de as legendas ligarem (e fica com altura zero
+    // enquanto ninguém fala): antes disso, "sem painel" seria falso alarme.
+    legendasOn: legendasLigadas,
+    semPainel: legendasLigadas && !painel,
+    pessoas,
   });
+})()
+"#;
+
+/// Coloca o "Idioma da reunião" em Português (Brasil). É uma configuração da
+/// SALA, não do agente: na sala do Milo já vem em português, na de quem tem a
+/// conta em inglês vem em inglês — e aí as legendas saem em inglês, com a fala
+/// em português virando bobagem. Roda com `awaitPromise` porque espera a tela.
+/// Testado ao vivo em 20/09: Inglês → Português (Brasil), nos dois caminhos.
+const IDIOMA: &str = r#"
+(async () => {
+  const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  const PT = /^Portugu[eê]s \(Brasil\)$|^Portuguese \(Brazil\)$/i;
+  const combo = () => [...document.querySelectorAll('[role=combobox]')].find((c) => /Idioma da reunião|Meeting language/i.test(c.getAttribute('aria-label') || ''));
+  const valor = (c) => (c?.innerText || '').replace(/^language\s*/i, '').replace(/\s+/g, ' ').trim();
+  let c = combo();
+  let abriuPainel = false;
+  if (!c) {
+    const abrir = [...document.querySelectorAll('button,[role=button]')].find((b) => /^(Abrir configurações de legenda|Open caption settings)/i.test(b.getAttribute('aria-label') || ''));
+    if (!abrir) return { ok: false, motivo: 'sem botão de configurações de legenda' };
+    abrir.click(); abriuPainel = true;
+    for (let i = 0; i < 10 && !c; i++) { await espera(300); c = combo(); }
+    if (!c) return { ok: false, motivo: 'painel de legendas não abriu' };
+  }
+  const antes = valor(c);
+  const fecharSeAbri = async () => {
+    if (!abriuPainel) return;
+    const fechar = [...document.querySelectorAll('button,[role=button]')].find((b) => /^(Fechar caixa de diálogo|Close dialog)/i.test(b.getAttribute('aria-label') || ''));
+    if (fechar) { fechar.click(); await espera(400); }
+  };
+  if (PT.test(antes)) { await fecharSeAbri(); return { ok: true, ja: true, antes }; }
+  if (c.getAttribute('aria-expanded') !== 'true') { c.click(); await espera(500); }
+  // Duas listas de idioma existem no DOM (a das Configurações fica escondida): vale a visível.
+  const lista = [...document.querySelectorAll('[role=listbox]')].find((l) => /Idioma da reunião|Meeting language/i.test(l.getAttribute('aria-label') || '') && l.getBoundingClientRect().height > 0);
+  if (!lista) return { ok: false, motivo: 'lista de idiomas não apareceu', antes };
+  const opcao = [...lista.querySelectorAll('[role=option]')].find((o) => PT.test((o.getAttribute('aria-label') || '').replace(/\s*BETA$/i, '').trim()));
+  if (!opcao) return { ok: false, motivo: 'sem a opção Português (Brasil)', antes };
+  opcao.click();
+  await espera(1000);
+  const depois = valor(combo());
+  // Deixa a tela como encontrou: quem abriu o painel de configurações fecha.
+  if (abriuPainel) {
+    const fechar = [...document.querySelectorAll('button,[role=button]')].find((b) => /^(Fechar caixa de diálogo|Close dialog)/i.test(b.getAttribute('aria-label') || ''));
+    if (fechar) { fechar.click(); await espera(400); }
+  }
+  return { ok: PT.test(depois), antes, depois, abriuPainel };
 })()
 "#;
 
@@ -206,10 +288,20 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
     let (mut tx, mut rx) = ws.split();
     let mut prox_id: u64 = 1;
     let mut sessao: Option<String> = None;
-    let mut pedido_do_roteiro: Option<u64> = None;
+    // Vários pedidos podem estar em voo: a resposta de um pedido antigo ainda vale.
+    let mut pedidos_do_roteiro: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let mut ultimo_estado = String::new();
     let mut ultima_legenda = String::new();
     let mut avisou_sem_painel = false;
+    // Idioma: tenta algumas vezes (a tela demora a montar) e depois avisa.
+    let mut idioma_ok = false;
+    let mut legendas_on = false;
+    let mut tentativas_idioma: u32 = 0;
+    let mut ultimo_idioma: Option<std::time::Instant> = None;
+    let mut pedidos_de_idioma: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Quem saiu deixa o agente sozinho: ele não fica pendurado sem ninguém.
+    let mut viu_outros = false;
+    let mut sozinho_desde: Option<std::time::Instant> = None;
     let inicio = std::time::Instant::now();
     let mut motivo_fim = "pedido".to_string();
 
@@ -225,7 +317,7 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
         return emitir(&app, json!({ "estado": "erro", "motivo": "o Chrome do agente caiu ao abrir" }));
     }
 
-    let mut relogio = tokio::time::interval(std::time::Duration::from_millis(900));
+    let mut relogio = tokio::time::interval(std::time::Duration::from_millis(500));
     loop {
         tokio::select! {
             _ = rx_parar.recv() => { break; }
@@ -235,8 +327,18 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
                     break;
                 }
                 if let Some(sid) = sessao.clone() {
+                    // Só depois de as legendas ligarem: é ali que o Meet mostra o idioma.
+                    if ultimo_estado == "na-reuniao" && legendas_on && !idioma_ok && tentativas_idioma < 6
+                        && ultimo_idioma.map(|t| t.elapsed() >= std::time::Duration::from_secs(4)).unwrap_or(true) {
+                        tentativas_idioma += 1;
+                        ultimo_idioma = Some(std::time::Instant::now());
+                        let (rid, m) = mandar("Runtime.evaluate", json!({ "expression": IDIOMA, "returnByValue": true, "awaitPromise": true, "userGesture": true }), Some(&sid), &mut prox_id);
+                        pedidos_de_idioma.insert(rid);
+                        if tx.send(Message::Text(m.to_string().into())).await.is_err() { motivo_fim = "o Chrome do agente fechou".into(); break; }
+                    }
                     let (rid, m) = mandar("Runtime.evaluate", json!({ "expression": ROTEIRO, "returnByValue": true, "userGesture": true }), Some(&sid), &mut prox_id);
-                    pedido_do_roteiro = Some(rid);
+                    pedidos_do_roteiro.insert(rid);
+                    if pedidos_do_roteiro.len() > 40 { pedidos_do_roteiro.clear(); pedidos_do_roteiro.insert(rid); }
                     if tx.send(Message::Text(m.to_string().into())).await.is_err() { motivo_fim = "o Chrome do agente fechou".into(); break; }
                 }
             }
@@ -260,7 +362,18 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
                     }
                     continue;
                 }
-                if Some(v["id"].as_u64().unwrap_or(0)) != pedido_do_roteiro.map(|x| x) { continue; }
+                let Some(rid) = v["id"].as_u64() else { continue };
+                if pedidos_de_idioma.remove(&rid) {
+                    let r = &v["result"]["result"]["value"];
+                    if r["ok"].as_bool() == Some(true) {
+                        idioma_ok = true;
+                        emitir(&app, json!({ "estado": "idioma", "id": id, "agente": agente, "ok": true, "de": r["antes"], "para": r["depois"] }));
+                    } else if tentativas_idioma >= 6 {
+                        emitir(&app, json!({ "estado": "idioma", "id": id, "agente": agente, "ok": false, "motivo": r["motivo"] }));
+                    }
+                    continue;
+                }
+                if !pedidos_do_roteiro.remove(&rid) { continue; }
                 let Some(bruto) = v["result"]["result"]["value"].as_str() else { continue };
                 let Ok(r) = serde_json::from_str::<Value>(bruto) else { continue };
                 let est = r["estado"].as_str().unwrap_or("").to_string();
@@ -271,6 +384,22 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
                         barra::mesclar(&app, json!({ "sub": "esperando alguém aceitar a entrada" }));
                     } else if est == "na-reuniao" {
                         barra::mesclar(&app, json!({ "sub": "ouvindo pelas legendas — sem microfone, sem câmera" }));
+                    }
+                }
+                legendas_on = r["legendasOn"].as_bool() == Some(true);
+                if est == "negado" { motivo_fim = "a entrada foi negada".into(); break; }
+                if est == "encerrada" { motivo_fim = "a reunião acabou".into(); break; }
+                if let Some(n) = r["pessoas"].as_u64() {
+                    if n >= 2 { viu_outros = true; sozinho_desde = None; }
+                    else if n == 1 {
+                        let desde = *sozinho_desde.get_or_insert_with(std::time::Instant::now);
+                        // Quem estava e saiu: 30 s de folga (queda de rede volta rápido).
+                        // Ninguém nunca entrou além do agente: espera mais antes de desistir.
+                        let folga = if viu_outros { 30 } else { 90 };
+                        if desde.elapsed() >= std::time::Duration::from_secs(folga) {
+                            motivo_fim = if viu_outros { "todos saíram da reunião".into() } else { "ninguém entrou na reunião".into() };
+                            break;
+                        }
                     }
                 }
                 if r["semPainel"].as_bool() == Some(true) && !avisou_sem_painel {
