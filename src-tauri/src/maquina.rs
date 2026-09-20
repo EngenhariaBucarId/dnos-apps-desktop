@@ -215,8 +215,12 @@ fn emitir_roteiro(app: &AppHandle, v: Value) {
 }
 
 /// Escreve na barra flutuante. `modo` decide o texto e quem o Parar chama:
-/// "atuando" (o agente executa) ou "assistindo" (a pessoa demonstra, 17/09).
-/// A foto sai da mesma fonte da barra do Chrome.
+/// "atuando" (o agente executa), "assistindo" (a pessoa demonstra, 17/09),
+/// "reuniao" (microfone desta máquina aberto) ou "meet" (o agente está numa
+/// sala, 20/09). A foto sai da mesma fonte da barra do Chrome.
+///
+/// A janela é do Tauri, não do macOS: serve aos três sistemas, apesar do nome
+/// "barra-mac" que ficou da origem.
 pub(crate) fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: &str, sub: String, ouvindo: bool) {
     let foto = if agente.is_empty() { None } else { crate::barra::foto_do_agente(app, agente) };
     let estado = json!({
@@ -225,7 +229,7 @@ pub(crate) fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: 
     if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
         if let Ok(mut g) = e.lock() {
             let mut estado = estado.clone();
-            if modo == "assistindo" { estado["ouvindo"] = g.barra_atual.as_ref().filter(|b| b["modo"] == "assistindo").map(|b| b["ouvindo"].clone()).unwrap_or(json!(false)); }
+            if COM_MICROFONE.contains(&modo) { estado["ouvindo"] = g.barra_atual.as_ref().filter(|b| b["modo"] == modo).map(|b| b["ouvindo"].clone()).unwrap_or(json!(false)); }
             g.barra_atual = Some(estado.clone());
             let _ = app.emit("dnos://barra-mac", estado);
             return;
@@ -234,11 +238,15 @@ pub(crate) fn falar_na_barra(app: &AppHandle, modo: &str, agente: &str, titulo: 
     let _ = app.emit("dnos://barra-mac", estado);
 }
 
+/// Modos em que a barra mostra o microfone: são os que de fato abrem o
+/// microfone desta máquina. O "meet" fica de fora — lá quem ouve é o Meet.
+const COM_MICROFONE: [&str; 2] = ["assistindo", "reuniao"];
+
 /// A barra só acende o microfone quando o capturador detecta fala real.
 pub(crate) fn atualizar_escuta(app: &AppHandle, ouvindo: bool) {
     if let Some(e) = app.try_state::<ExecucaoCompartilhada>() {
         if let Ok(mut g) = e.lock() {
-            if let Some(v) = g.barra_atual.as_mut().filter(|v| v["modo"] == "assistindo") {
+            if let Some(v) = g.barra_atual.as_mut().filter(|v| v["modo"].as_str().map(|m| COM_MICROFONE.contains(&m)).unwrap_or(false)) {
                 v["ouvindo"] = json!(ouvindo);
                 let _ = app.emit("dnos://barra-mac", v.clone());
             }

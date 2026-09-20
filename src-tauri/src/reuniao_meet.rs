@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use tokio::net::TcpStream;
 
-use crate::{barra, maquina, meu_chrome};
+use crate::{maquina, meu_chrome};
 
 /// Porta de depuração do Chrome do agente. Fora da faixa do Meu Chrome
 /// (19222+), que é o Chrome da pessoa.
@@ -71,6 +71,47 @@ fn link_de_meet(link: &str) -> Option<String> {
     if l.starts_with("https://meet.google.com/") { Some(l) } else { None }
 }
 
+/// Tranca microfone e câmera no perfil do agente, ANTES de abrir o Chrome.
+///
+/// Dois motivos, os dois medidos em 20/09:
+/// - a primeira entrada da Cora levou 68 s porque o Chrome pedia permissão de
+///   microfone e câmera numa janela que o roteiro não enxerga (o Rodrigo teve
+///   que clicar em "Permitir" na mão);
+/// - desligar o microfone pelo botão do Meet é promessa de software; permissão
+///   negada é impedimento. Com isto o agente NÃO CONSEGUE transmitir voz nem
+///   imagem, mesmo que algum passo do roteiro falhe.
+///
+/// As legendas continuam chegando: elas vêm do servidor do Meet, não do áudio
+/// captado aqui (provado ao vivo, com a permissão negada).
+///
+/// `2` é o valor do Chrome para "bloquear". O padrão não basta sozinho: uma
+/// permissão dada antes vira exceção por site e vence o padrão — foi o que
+/// aconteceu no perfil da Cora. Por isso as exceções existentes também caem.
+fn trancar_microfone_e_camera(dados: &std::path::Path) {
+    let arquivo = dados.join("Default").join("Preferences");
+    // Perfil novo ainda não tem o arquivo. Escrever um mínimo ANTES da primeira
+    // abertura é o que impede a janela de permissão de aparecer logo na estreia
+    // do agente — provado com um perfil zerado: microfone e câmera já nascem
+    // negados, sem nenhuma pergunta na tela.
+    if !arquivo.exists() {
+        let _ = std::fs::create_dir_all(arquivo.parent().unwrap_or(dados));
+        let minimo = json!({ "profile": { "default_content_setting_values": { "media_stream_mic": 2, "media_stream_camera": 2 } } });
+        let _ = std::fs::write(&arquivo, minimo.to_string());
+        return;
+    }
+    let Ok(texto) = std::fs::read_to_string(&arquivo) else { return };
+    let Ok(mut v) = serde_json::from_str::<Value>(&texto) else { return };
+    let perfil = v.as_object_mut().and_then(|o| o.entry("profile").or_insert(json!({})).as_object_mut().map(|_| ()));
+    if perfil.is_none() { return; }
+    for chave in ["media_stream_mic", "media_stream_camera"] {
+        v["profile"]["default_content_setting_values"][chave] = json!(2);
+        if let Some(sites) = v["profile"]["content_settings"]["exceptions"][chave].as_object_mut() {
+            for (_site, regra) in sites.iter_mut() { regra["setting"] = json!(2); }
+        }
+    }
+    let _ = std::fs::write(&arquivo, v.to_string());
+}
+
 fn abrir_chrome(app: &AppHandle, agente: &str, link: &str) -> Result<Child, String> {
     let bin = meu_chrome::binario_do_chrome().ok_or("não achei o Google Chrome neste computador")?;
     let dados = app
@@ -80,6 +121,7 @@ fn abrir_chrome(app: &AppHandle, agente: &str, link: &str) -> Result<Child, Stri
         .join("chrome-agentes")
         .join(pasta_do_agente(agente));
     std::fs::create_dir_all(&dados).map_err(|e| e.to_string())?;
+    trancar_microfone_e_camera(&dados);
     Command::new(bin)
         .arg(format!("--remote-debugging-port={PORTA}"))
         .arg(format!("--user-data-dir={}", dados.display()))
@@ -278,12 +320,8 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
     if let Ok(mut g) = estado.lock() {
         g.ativa = Some(Sessao { id: id.clone(), agente: agente.clone(), parar: tx_parar, _reserva: reserva });
     }
-    barra::mostrar(&app, json!({
-        "modo": "grav",
-        "titulo": format!("{agente} está na reunião"),
-        "sub": "entrou calado, sem câmera — só transcrição",
-        "parar": true,
-    }));
+    maquina::mostrar_barra(&app);
+    maquina::falar_na_barra(&app, "meet", &agente, "", "entrando na sala — sem microfone, sem câmera".into(), false);
 
     let (mut tx, mut rx) = ws.split();
     let mut prox_id: u64 = 1;
@@ -381,9 +419,9 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
                     ultimo_estado = est.clone();
                     emitir(&app, json!({ "estado": est, "id": id, "agente": agente }));
                     if est == "aguardando" {
-                        barra::mesclar(&app, json!({ "sub": "esperando alguém aceitar a entrada" }));
+                        maquina::falar_na_barra(&app, "meet", &agente, "", "esperando alguém aceitar a entrada".into(), false);
                     } else if est == "na-reuniao" {
-                        barra::mesclar(&app, json!({ "sub": "ouvindo pelas legendas — sem microfone, sem câmera" }));
+                        maquina::falar_na_barra(&app, "meet", &agente, "", "ouvindo pelas legendas — sem microfone, sem câmera".into(), false);
                     }
                 }
                 legendas_on = r["legendasOn"].as_bool() == Some(true);
@@ -423,7 +461,7 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
         tokio::time::sleep(std::time::Duration::from_millis(900)).await;
     }
     fechar_chrome(&app, &agente);
-    barra::esconder(&app);
+    maquina::esconder_barra(&app);
     if let Ok(mut g) = estado.lock() { g.ativa = None; }
     drop(filho);
     emitir(&app, json!({ "estado": "saiu", "id": id, "agente": agente, "motivo": motivo_fim }));

@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
-use crate::{barra, maquina, meu_chrome, voz};
+use crate::{maquina, meu_chrome, voz};
 
 /// Teto de uma sessão. Reunião esquecida aberta é microfone aberto.
 const TETO: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
@@ -47,9 +47,13 @@ pub fn ativa(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+/// A barra flutuante fica por cima de tudo, nos três sistemas: numa reunião a
+/// janela do dn.os costuma estar minimizada, e o único aviso de microfone
+/// aberto seria o do sistema operacional (20/09 — antes disto, com o Meu Chrome
+/// desligado, não aparecia barra nenhuma).
 fn barra_da_reuniao(app: &AppHandle, agente: &str) {
-    let titulo = if agente.is_empty() { "dn.os está ouvindo a reunião".to_string() } else { format!("{agente} está ouvindo a reunião") };
-    barra::mostrar(app, json!({ "modo": "grav", "titulo": titulo, "sub": "só transcrição — o áudio não é guardado", "parar": true }));
+    maquina::mostrar_barra(app);
+    maquina::falar_na_barra(app, "reuniao", agente, "", "o áudio não é guardado — só a transcrição".into(), false);
 }
 
 fn iniciar(app: &AppHandle, id: String, agente: String) {
@@ -98,7 +102,7 @@ fn parar_com(app: &AppHandle, motivo: &str) {
     };
     let Some(sessao) = fim else { return };
     voz::desligar(app);
-    barra::esconder(app);
+    maquina::esconder_barra(app);
     emitir(app, json!({
         "estado": "parado",
         "id": sessao.id,
@@ -144,8 +148,8 @@ pub fn instalar(app: &AppHandle) {
         }
     });
 
-    // A barra é a mesma da gravação; o botão Parar dela emite este evento.
-    // Quando quem está no ar é a reunião, é a reunião que encerra.
+    // Parar da barra flutuante (modo "reuniao") e da barra do Chrome, que
+    // continua existindo para a gravação do Aprenda comigo.
     let h = app.clone();
     app.listen_any("dnos://gravador/parar-pela-barra", move |_| { parar_pela_barra(&h); });
 }

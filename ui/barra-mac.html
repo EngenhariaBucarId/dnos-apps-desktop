@@ -6,6 +6,10 @@
   Serve aos DOIS lados do recurso, e o modo muda quem manda parar:
     · atuando    — o agente executa um roteiro; Parar interrompe a execução.
     · assistindo — a pessoa demonstra e o agente assiste; Parar encerra a gravação.
+    · reuniao    — o microfone DESTA máquina está aberto numa reunião (20/09);
+                   Parar encerra e entrega a transcrição ao agente.
+    · meet       — o agente está numa sala do Meet, pelo Chrome dele; Parar tira
+                   ele da sala. Aqui nenhum microfone desta máquina está aberto.
 
   Design: Luxury Intelligence (tokens --lux-* do dn.os). Glow é funcional, só
   marca o que está vivo — nunca enfeite. Vermelho só no Parar, que é a única
@@ -35,8 +39,8 @@
     box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.02) inset}
   /* Atuando: a borda acende no azul da marca — é o estado em que a máquina
      está fora da mão da pessoa, e isso tem que ser visível de canto de olho. */
-  .barra.atuando,.barra.explorando,.barra.explorar-aprovacao{border-color:var(--borda-primaria);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 22px var(--glow)}
-  .barra.olhando,.barra.assistindo{border-color:rgba(138,92,255,.4);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 18px var(--glow-ia)}
+  .barra.meet,.barra.atuando,.barra.explorando,.barra.explorar-aprovacao{border-color:var(--borda-primaria);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 22px var(--glow)}
+  .barra.reuniao,.barra.olhando,.barra.assistindo{border-color:rgba(138,92,255,.4);box-shadow:0 16px 44px -16px rgba(0,0,0,.8), 0 0 18px var(--glow-ia)}
 
   /* Agente: foto quando o dn.os já mandou; senão a inicial, no tom do modo. */
   .agente{position:relative;flex:none;width:32px;height:32px}
@@ -48,7 +52,7 @@
   .agente > [hidden]{display:none}
   .anel{position:absolute;inset:-3px;border-radius:14px;border:1.5px solid var(--primaria);opacity:.9;
     animation:pulso 1.8s ease-out infinite}
-  .assistindo .anel{border-color:var(--ia)}
+  .assistindo .anel,.reuniao .anel{border-color:var(--ia)}
   @keyframes pulso{0%{transform:scale(1);opacity:.9}70%{transform:scale(1.14);opacity:0}100%{opacity:0}}
   @media (prefers-reduced-motion: reduce){ .anel{animation:none;opacity:.55} }
 
@@ -56,7 +60,7 @@
   .titulo{font-weight:600;font-size:13px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sub{font-size:11px;line-height:1.3;color:var(--texto-fraco);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .quem{color:var(--primaria)}
-  .assistindo .quem{color:var(--ia)}
+  .assistindo .quem,.reuniao .quem{color:var(--ia)}
 
   /* Microfone: só na gravação, e só acende quando está ouvindo de verdade. */
   .mic{flex:none;width:22px;height:22px;border-radius:8px;display:none;align-items:center;justify-content:center;
@@ -98,12 +102,17 @@
 
   await ev.listen("dnos://barra-mac", (e) => {
     const p = e.payload || {};
-    modo = ["assistindo", "olhando", "explorando", "explorar-aprovacao"].includes(p.modo) ? p.modo : "atuando";
+    modo = ["assistindo", "olhando", "explorando", "explorar-aprovacao", "reuniao", "meet"].includes(p.modo) ? p.modo : "atuando";
     $("barra").className = "barra " + modo;
 
     const quem = p.agente || "dn.os";
     $("aprovar").hidden = modo !== "explorar-aprovacao";
-    const acao = modo.startsWith("explor") ? "tem uma sessão de aprendizado" : modo === "olhando" ? "pode olhar a janela autorizada" : modo === "assistindo" ? "está assistindo você" : "está usando o seu computador";
+    const acao = modo.startsWith("explor") ? "tem uma sessão de aprendizado"
+      : modo === "olhando" ? "pode olhar a janela autorizada"
+      : modo === "assistindo" ? "está assistindo você"
+      : modo === "reuniao" ? "está ouvindo esta reunião"
+      : modo === "meet" ? "está na reunião do Meet"
+      : "está usando o seu computador";
     $("titulo").innerHTML = '<span class="quem"></span> ' + acao + (p.titulo ? ' · <span class="oque"></span>' : "");
     $("titulo").querySelector(".quem").textContent = quem;
     if (p.titulo) $("titulo").querySelector(".oque").textContent = p.titulo;
@@ -113,11 +122,18 @@
     if (p.foto) { $("foto").src = p.foto; $("foto").hidden = false; $("inicial").hidden = true; }
     else { $("foto").hidden = true; $("inicial").hidden = false; $("inicial").textContent = quem.slice(0, 2).toLowerCase(); }
 
-    $("mic").className = "mic" + (modo === "assistindo" ? " ligado" : "") + (p.ouvindo ? " ouvindo" : "");
+    // Microfone só nos modos que de fato abrem o microfone desta máquina — no
+    // "meet" quem ouve é o Meet, e mostrar o ícone aqui seria mentira.
+    $("mic").className = "mic" + (["assistindo", "reuniao"].includes(modo) ? " ligado" : "") + (p.ouvindo ? " ouvindo" : "");
     // O atalho só existe na execução; prometer atalho que não funciona é pior
     // que não prometer nada. Fora do corpo da barra: ocupava o espaço do texto.
-    $("parar").textContent = modo === "assistindo" ? "Finalizar" : "Parar";
-    $("parar").title = modo.startsWith("explor") ? "Parar a exploração" : modo === "atuando" ? "Parar · ou Esc Esc" : modo === "olhando" ? "Parar a observação" : "Finalizar demonstração e revisar";
+    $("parar").textContent = modo === "assistindo" ? "Finalizar" : modo === "meet" ? "Sair" : "Parar";
+    $("parar").title = modo.startsWith("explor") ? "Parar a exploração"
+      : modo === "atuando" ? "Parar · ou Esc Esc"
+      : modo === "olhando" ? "Parar a observação"
+      : modo === "reuniao" ? "Encerrar a reunião e entregar a transcrição"
+      : modo === "meet" ? "Tirar o agente da sala e entregar a transcrição"
+      : "Finalizar demonstração e revisar";
   });
 
   // A criação da webview e o primeiro estado acontecem em processos
@@ -138,6 +154,8 @@
   $("parar").onclick = () => {
     if (modo.startsWith("explor")) { window.__TAURI__.core.invoke("explorar_computador",{acao:"parar"}); return; }
     if (modo === "olhando") window.__TAURI__.core.invoke("olhar_computador", { acao: "parar" });
+    else if (modo === "reuniao") ev.emit("dnos://reuniao/parar", {});
+    else if (modo === "meet") ev.emit("dnos://reuniao-meet/sair", {});
     else if (modo === "assistindo") ev.emit("dnos://gravador/parar-pela-barra", {});
     else ev.emit("dnos://roteiro/parar", {});
   };

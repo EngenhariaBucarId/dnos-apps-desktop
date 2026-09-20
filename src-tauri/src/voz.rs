@@ -183,9 +183,9 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
     let avisar = |falando: bool| {
         let _ = app.emit("dnos://gravador/ouvindo", json!({ "falando": falando }));
         crate::barra::mesclar(app, json!({ "ouvindo": falando }));
-        // Na reunião ninguém está executando passo nenhum: a escuta não é
-        // atividade de execução e não deve mexer no relógio da máquina.
-        if ajustes.escuta_na_maquina { crate::maquina::atualizar_escuta(app, falando); }
+        // Acende o microfone da barra flutuante no modo que estiver no ar
+        // (demonstração ou reunião); fora deles, não faz nada.
+        crate::maquina::atualizar_escuta(app, falando);
     };
     loop {
         if parar.try_recv().is_ok() {
