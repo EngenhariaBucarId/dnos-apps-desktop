@@ -101,11 +101,23 @@ try:
         conferir("alt+f4 é bloqueado", r.get("motivo") == "atalho_bloqueado", str(r))
         r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "menus", "caminho": [], "listar": True}))
         print("menu listar:", json.dumps(r, ensure_ascii=False)[:400])
+        conferir("menu lista os menus do topo", isinstance(r.get("menu"), list) and len(r["menu"]) >= 3, str(r)[:200])
+        # Um nível abaixo: abre o menu, lista e fecha (só informativo: a estrutura muda entre versões do Bloco de Notas).
+        r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "menu Format", "caminho": ["Format"], "listar": True}))
+        print("menu Format (listar):", json.dumps(r, ensure_ascii=False)[:400])
+        r = rodar(["--acao"], json.dumps({**base, "tipo": "menu", "descricao": "inexistente", "caminho": ["Nao existe"]}))
+        conferir("menu inexistente diz as opções", "menu_nao_encontrado" in str(r.get("motivo", "")), str(r)[:200])
+        r = rodar(["--acao"], json.dumps({**base, "tipo": "clique", "descricao": "fora do app", "x": 0.001, "y": 0.001}))
+        print("clique no canto da tela:", json.dumps(r, ensure_ascii=False)[:200])
 
     # Roteiro v2 pelo executor (o mesmo caminho da casca).
+    jr, cr = o["janela"]["ret"], o["captura"]["ret"]
+    cx, cy = (jr["x"] + jr["w"] * 0.5 - cr["x"]) / cr["w"], (jr["y"] + jr["h"] * 0.5 - cr["y"]) / cr["h"]
     roteiro = {
         "nome": "fumaca", "bundle": "notepad.exe", "app": "Bloco de Notas", "criterio_sucesso": "texto no bloco",
         "passos": [
+            {"acao": "esperar_janela", "titulo_contem": "notepad", "ms": 3000, "descricao": "esperar a janela"},
+            {"acao": "clique", "x": round(cx, 3), "y": round(cy, 3), "descricao": "clicar no meio da janela"},
             {"acao": "esperar", "ms": 300, "descricao": "esperar"},
             {"acao": "tecla", "tecla": "a", "mods": ["cmd"], "descricao": "selecionar tudo"},
             {"acao": "digitar", "valor": "roteiro rodou", "descricao": "digitar"},
