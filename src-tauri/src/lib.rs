@@ -166,7 +166,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_GRAVADOR_MAC__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_GRAVADOR_MAC__ };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
 })();
 "#;
 
@@ -175,7 +175,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_GRAVADOR_MAC__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_GRAVADOR_MAC__ });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -318,7 +318,7 @@ pub fn run() {
                 .and_then(|u| u.host_str().map(|h| h.to_string()))
                 .unwrap_or_default();
             // A versão vem do Cargo.toml (13/09: estava fixa em "0.7.1" e a abertura mostrava a versão errada).
-            let script = format!("window.__DNOS_URL__ = {};window.__DNOS_FOTOS__ = {};window.__DNOS_GRAVADOR_MAC__ = {};{}", serde_json::to_string(&base)?, fotos_da_abertura(), maquina::disponivel(), SCRIPT_INICIAL.replace("__DNOS_VERSAO__", env!("CARGO_PKG_VERSION")));
+            let script = format!("window.__DNOS_URL__ = {};window.__DNOS_FOTOS__ = {};window.__DNOS_GRAVADOR_MAC__ = {};window.__DNOS_COMPUTADOR__ = {};{}", serde_json::to_string(&base)?, fotos_da_abertura(), maquina::disponivel(), serde_json::to_string(maquina::sistema())?, SCRIPT_INICIAL.replace("__DNOS_VERSAO__", env!("CARGO_PKG_VERSION")));
 
             let handle_nav = app.handle().clone();
             let host_nav = host.clone();

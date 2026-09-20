@@ -33,11 +33,41 @@ use crate::meu_chrome;
 
 #[cfg(target_os = "macos")]
 const AJUDANTE: &[u8] = include_bytes!("../ajudantes/dnos-gravador-mac");
-#[cfg(not(target_os = "macos"))]
+// Windows (0.8.0): executar roteiro e explorar; a gravação da máquina segue só no Mac.
+#[cfg(windows)]
+const AJUDANTE: &[u8] = include_bytes!("../ajudantes/dnos-computador-win.exe");
+#[cfg(not(any(target_os = "macos", windows)))]
 const AJUDANTE: &[u8] = &[];
 
+/// Gravação da máquina (Aprenda comigo por demonstração): só no Mac.
 pub fn disponivel() -> bool {
     cfg!(target_os = "macos") && !AJUDANTE.is_empty()
+}
+
+/// O computador inteiro (explorar e executar roteiro): Mac e Windows.
+pub fn computador_disponivel() -> bool {
+    !AJUDANTE.is_empty()
+}
+
+/// Sistema do computador para a página e o relay; vazio onde não há ajudante.
+pub fn sistema() -> &'static str {
+    if !computador_disponivel() {
+        ""
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "windows"
+    }
+}
+
+/// Sem janela de console piscando quando o ajudante do Windows é iniciado.
+pub(crate) fn sem_console(c: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    c
 }
 
 /// A casca em si é confiável para a Acessibilidade? (o ajudante herda da casca,
@@ -50,17 +80,17 @@ fn casca_confiavel() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 #[cfg(not(target_os = "macos"))]
-fn casca_confiavel() -> bool { false }
+fn casca_confiavel() -> bool { cfg!(windows) } // o Windows não tem o registro de confiança do macOS
 
 /// Escreve o ajudante em disco (uma vez por versão da casca) e devolve o caminho.
 fn caminho_do_ajudante(app: &AppHandle) -> Result<PathBuf, String> {
-    if !disponivel() {
-        return Err("gravador da máquina só existe no macOS".into());
+    if !computador_disponivel() {
+        return Err("o ajudante do computador só existe no macOS e no Windows".into());
     }
     let pasta = app.path().app_data_dir().map_err(|e| e.to_string())?.join("ajudantes");
     std::fs::create_dir_all(&pasta).map_err(|e| e.to_string())?;
     let versao = app.package_info().version.to_string();
-    let arq = pasta.join(format!("dnos-gravador-mac-{versao}"));
+    let arq = pasta.join(if cfg!(windows) { format!("dnos-computador-win-{versao}.exe") } else { format!("dnos-gravador-mac-{versao}") });
     let atual = std::fs::metadata(&arq).map(|m| m.len() as usize).unwrap_or(0);
     if atual != AJUDANTE.len() {
         std::fs::write(&arq, AJUDANTE).map_err(|e| format!("não escrevi o ajudante: {e}"))?;
@@ -120,8 +150,9 @@ mod microfone {
 }
 #[cfg(not(target_os = "macos"))]
 mod microfone {
-    pub fn autorizado() -> bool { false }
-    pub fn pedir() -> bool { false }
+    // Fora do Mac não há pergunta do sistema por app de área de trabalho.
+    pub fn autorizado() -> bool { cfg!(windows) }
+    pub fn pedir() -> bool { cfg!(windows) }
 }
 
 /// `permissoes [--pedir]` → {acessibilidade, tela, microfone}. Com `pedir`, uma por vez:
@@ -133,6 +164,7 @@ fn permissoes(app: &AppHandle, pedir: bool) -> Value {
     };
     let rodar = |pedir: bool| -> Value {
         let mut cmd = Command::new(&arq);
+        sem_console(&mut cmd);
         cmd.arg("permissoes");
         if pedir { cmd.arg("--pedir"); }
         match cmd.output() {
@@ -303,7 +335,7 @@ pub async fn executar(app: AppHandle, pedido: Value) {
     let arq_roteiro = pasta.join(format!("{}.json", gravador::agora_ms()));
     if let Err(e) = std::fs::write(&arq_roteiro, json!({ "nome": nome, "passos": passos, "bundle": pedido["bundle"], "app": pedido["app"] }).to_string()) { return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e.to_string() })); }
     let identificador = app.config().identifier.clone();
-    let mut filho = match Command::new(&arq).arg("executar").arg("--roteiro").arg(&arq_roteiro).arg("--ignorar").arg(&identificador)
+    let mut filho = match sem_console(Command::new(&arq).arg("executar").arg("--roteiro").arg(&arq_roteiro).arg("--ignorar").arg(&identificador))
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         Ok(f) => f,
         Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": format!("não abri o executor da máquina: {e}") })),
@@ -363,7 +395,7 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                 espera = 5;
                 let (mut tx, mut rx) = ws.split();
                 let versao = app.package_info().version.to_string();
-                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao, "capacidades": ["olhar-v1", "explorar-v1"] }).to_string().into())).await.is_err() { continue; }
+                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao, "capacidades": ["olhar-v1", "explorar-v1"], "sistema": sistema() }).to_string().into())).await.is_err() { continue; }
                 meu_chrome::registrar(&app, "no-mac: conectado ao relay");
                 // Andamento do roteiro → relay (só os eventos com id, que vieram de lá).
                 let (para_relay, mut fila) = mpsc::unbounded_channel::<String>();
@@ -429,7 +461,7 @@ pub fn instalar(app: &AppHandle) {
     });
     let h = app.clone();
     app.listen_any("dnos://maquina/no", move |evento| {
-        if !disponivel() { return; }
+        if !computador_disponivel() { return; }
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
         let endereco = v["endereco"].as_str().unwrap_or("").trim().to_string();
         let token = v["token"].as_str().unwrap_or("").trim().to_string();

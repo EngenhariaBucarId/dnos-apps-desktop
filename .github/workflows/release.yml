@@ -58,6 +58,17 @@ jobs:
         if: startsWith(matrix.platform, 'macos')
         run: bash src-tauri/ajudantes/compilar.sh
 
+      # Ajudante do computador no Windows (Rust): embutido na casca por include_bytes!
+      # em exploracao.rs e maquina.rs. Só no Windows.
+      - name: Ajudante computador-win (Rust)
+        if: startsWith(matrix.platform, 'windows')
+        shell: bash
+        run: |
+          cargo build --release --manifest-path src-tauri/ajudantes/computador-win/Cargo.toml
+          cp src-tauri/ajudantes/computador-win/target/release/dnos-computador-win.exe src-tauri/ajudantes/dnos-computador-win.exe
+          ls -la src-tauri/ajudantes/dnos-computador-win.exe
+          src-tauri/ajudantes/dnos-computador-win.exe --permissoes
+
       - run: npm ci
 
       # Assinatura do Mac com certificado PRÓPRIO (13/09): auto-assinado, o mesmo

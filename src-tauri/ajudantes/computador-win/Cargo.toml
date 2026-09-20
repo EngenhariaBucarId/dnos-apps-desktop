@@ -1,0 +1,38 @@
+[package]
+name = "dnos-computador-win"
+version = "0.1.0"
+edition = "2021"
+description = "Ajudante do dn.os Desktop no Windows: olha a tela, age e executa roteiros. Mesmo protocolo do olhar-mac e do gravador-mac."
+publish = false
+
+# Fora do workspace da casca: compila sozinho no CI (windows-latest) e o binário
+# é embutido na casca por include_bytes!.
+[workspace]
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Com",
+  "Win32_System_Threading",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
