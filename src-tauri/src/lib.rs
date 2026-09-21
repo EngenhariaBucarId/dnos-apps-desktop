@@ -25,6 +25,7 @@ mod reuniao;
 mod reuniao_meet;
 mod roteiro;
 mod voz;
+mod voz_dsp;
 
 const URL_PADRAO: &str = "https://dnos.dnia.ai";
 

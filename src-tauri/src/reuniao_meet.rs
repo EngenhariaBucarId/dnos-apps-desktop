@@ -29,6 +29,32 @@ use crate::{maquina, meu_chrome};
 const PORTA: u16 = 19340;
 /// Teto de uma sessão, igual ao da gravação.
 const TETO_MIN: u64 = 120;
+/// Quanto o agente espera na porta da sala antes de desistir (21/09/2026).
+const ESPERA_NA_PORTA_MIN: u64 = 5;
+
+/// A espera na SALA DE ESPERA do Meet.
+///
+/// Todas as regras de "sair sozinho" contam gente dentro da sala — e na sala de
+/// espera não há sala: a contagem nem existe. Resultado: sem ninguém para
+/// aceitá-la, o agente ficava esperando até o teto de 2 horas (21/09: a Malu
+/// tentou entrar numa sala vazia e ficou 2,5 min, até o Rodrigo mandar sair).
+/// Aqui a espera tem prazo.
+///
+/// Só o fim da espera de verdade a zera (entrar na sala): a tela oscila entre
+/// "aguardando" e "entrando" por instantes, e zerar a cada oscilação faria o
+/// prazo nunca vencer.
+#[derive(Default)]
+struct Porta { desde: Option<std::time::Instant> }
+impl Porta {
+    /// Alimenta com o estado da tela. Devolve true quando já esperou demais.
+    fn desistiu(&mut self, estado: &str, agora: std::time::Instant, limite: std::time::Duration) -> bool {
+        match estado {
+            "na-reuniao" => { self.desde = None; false }
+            "aguardando" => agora.duration_since(*self.desde.get_or_insert(agora)) >= limite,
+            _ => self.desde.map(|d| agora.duration_since(d) >= limite).unwrap_or(false),
+        }
+    }
+}
 
 struct Sessao {
     id: String,
@@ -369,6 +395,7 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
     // Quem saiu deixa o agente sozinho: ele não fica pendurado sem ninguém.
     let mut viu_outros = false;
     let mut sozinho_desde: Option<std::time::Instant> = None;
+    let mut porta = Porta::default();
     let inicio = std::time::Instant::now();
     let mut motivo_fim = "pedido".to_string();
 
@@ -459,6 +486,10 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
                 legendas_on = r["legendasOn"].as_bool() == Some(true);
                 if est == "negado" { motivo_fim = "a entrada foi negada".into(); break; }
                 if est == "encerrada" { motivo_fim = "a reunião acabou".into(); break; }
+                if porta.desistiu(&est, std::time::Instant::now(), std::time::Duration::from_secs(ESPERA_NA_PORTA_MIN * 60)) {
+                    motivo_fim = format!("ninguém aceitou a entrada em {ESPERA_NA_PORTA_MIN} minutos");
+                    break;
+                }
                 if let Some(n) = r["pessoas"].as_u64() {
                     if n >= 2 { viu_outros = true; sozinho_desde = None; }
                     else if n == 1 {
@@ -548,6 +579,52 @@ pub fn instalar(app: &AppHandle) {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    // ── a espera na sala de espera ──
+    const LIMITE: std::time::Duration = std::time::Duration::from_secs(ESPERA_NA_PORTA_MIN * 60);
+    fn em(base: std::time::Instant, s: u64) -> std::time::Instant { base + std::time::Duration::from_secs(s) }
+
+    #[test]
+    fn desiste_depois_de_cinco_minutos_esperando_e_nao_antes() {
+        let t0 = std::time::Instant::now();
+        let mut p = Porta::default();
+        assert!(!p.desistiu("aguardando", t0, LIMITE));
+        assert!(!p.desistiu("aguardando", em(t0, 150), LIMITE), "2,5 min: o caso da Malu, ainda esperando");
+        assert!(!p.desistiu("aguardando", em(t0, 299), LIMITE));
+        assert!(p.desistiu("aguardando", em(t0, 300), LIMITE));
+    }
+
+    #[test]
+    fn a_tela_que_oscila_entre_aguardando_e_entrando_nao_zera_o_prazo() {
+        let t0 = std::time::Instant::now();
+        let mut p = Porta::default();
+        assert!(!p.desistiu("aguardando", t0, LIMITE));
+        for s in (10..300).step_by(10) {
+            // o Meet troca de tela por um instante: se isso zerasse o prazo, ele nunca venceria
+            let estado = if s % 20 == 0 { "entrando" } else { "aguardando" };
+            assert!(!p.desistiu(estado, em(t0, s), LIMITE));
+        }
+        assert!(p.desistiu("entrando", em(t0, 305), LIMITE), "venceu mesmo com a oscilação");
+    }
+
+    #[test]
+    fn entrar_na_sala_encerra_a_espera() {
+        let t0 = std::time::Instant::now();
+        let mut p = Porta::default();
+        p.desistiu("aguardando", t0, LIMITE);
+        assert!(!p.desistiu("na-reuniao", em(t0, 45), LIMITE));
+        // uma espera nova (depois de sair e voltar) começa do zero
+        assert!(!p.desistiu("aguardando", em(t0, 400), LIMITE));
+        assert!(!p.desistiu("aguardando", em(t0, 500), LIMITE));
+    }
+
+    #[test]
+    fn quem_nunca_esperou_na_porta_nunca_desiste_por_isso() {
+        let t0 = std::time::Instant::now();
+        let mut p = Porta::default();
+        for s in [0u64, 400, 4000] { assert!(!p.desistiu("entrando", em(t0, s), LIMITE)); }
+        assert!(!p.desistiu("na-reuniao", em(t0, 5000), LIMITE));
+    }
 
     /// O nome na sala vale para QUALQUER agente — não é do Milo nem da Cora.
     #[test]

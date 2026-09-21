@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 use crate::meu_chrome;
+use crate::voz_dsp::{self, Cortador, Evento, Perfil, Trecho, PERFIL_NOTA, PERFIL_REUNIAO};
 
 /// O que muda entre "fale para anotar" (trechos curtos, uma nota cada) e
 /// "reunião" (trechos longos, transcrição corrida): tamanho do corte, evento
@@ -21,12 +22,12 @@ use crate::meu_chrome;
 #[derive(Clone, Copy)]
 pub struct Ajustes {
     pub evento_audio: &'static str,
-    /// Teto de um trecho; a fala é cortada no primeiro silêncio depois disso.
-    pub maximo_ms: u64,
+    /// Como o áudio é cortado em trechos (pausa, teto, piso de ruído): ver `voz_dsp`.
+    pub perfil: Perfil,
     pub escuta_na_maquina: bool,
 }
-pub const NOTA: Ajustes = Ajustes { evento_audio: "dnos://gravador/audio", maximo_ms: 15_000, escuta_na_maquina: true };
-pub const REUNIAO: Ajustes = Ajustes { evento_audio: "dnos://reuniao/audio", maximo_ms: 45_000, escuta_na_maquina: false };
+pub const NOTA: Ajustes = Ajustes { evento_audio: "dnos://gravador/audio", perfil: PERFIL_NOTA, escuta_na_maquina: true };
+pub const REUNIAO: Ajustes = Ajustes { evento_audio: "dnos://reuniao/audio", perfil: PERFIL_REUNIAO, escuta_na_maquina: false };
 
 pub struct Voz {
     parar: Option<std::sync::mpsc::Sender<()>>,
@@ -162,19 +163,14 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
     }.map_err(|e| format!("abrindo o microfone: {e}"))?;
     stream.play().map_err(|e| format!("iniciando o microfone: {e}"))?;
 
-    // Cortador: a cada 100 ms olha o que chegou e decide onde termina uma fala.
-    // Limiar adaptativo: 3x o ruído de fundo (mediana móvel dos blocos quietos),
-    // nunca abaixo de 0,004. Nível máximo vai para o diário a cada 5 s, para
-    // saber se o microfone está entregando áudio de verdade.
-    let janela = taxa / 10;                // 100 ms
-    let mut fala: Vec<f32> = Vec::new();
-    let mut em_fala = false;
-    let mut silencio_ms = 0u64;
+    // O corte em trechos (piso de ruído, histerese, pré-roll) mora em `voz_dsp`, onde é testado
+    // com sinais sintéticos. Aqui só se alimenta o cortador e se reage ao que ele decide.
+    let mut cortador = Cortador::novo(taxa, ajustes.perfil);
     let mut inicio_fala = 0u64;
-    let mut ruido = 0.003f32;
     let mut max_5s = 0f32;
-    let mut blocos_5s = 0u32;
+    let mut janelas_5s = 0u32;
     let mut sem_audio_ms = 0u64;
+    let mut ultimo_resumo = std::time::Instant::now();
     // Sinal de verdade: qualquer amostra diferente de zero. Só zeros por 3 s é
     // dispositivo mudo, virtual ou sem permissão — troca (ou avisa, se for o último).
     let inicio = std::time::Instant::now();
@@ -190,10 +186,11 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
     loop {
         if parar.try_recv().is_ok() {
             drop(stream);
-            if em_fala {
-                if let Ok(mut restante) = acumulado.lock() { fala.extend(std::mem::take(&mut *restante)); }
-                if fala.len() >= taxa / 2 { enviar(app, &fala, taxa, inicio_fala, id, ajustes); }
-            }
+            // O que o microfone ainda tinha na mão entra antes de fechar a fala em curso.
+            let restante = acumulado.lock().map(|mut a| std::mem::take(&mut *a)).unwrap_or_default();
+            for e in cortador.empurrar(&restante) { tratar(app, e, taxa, &mut inicio_fala, id, ajustes, &avisar, &mut max_5s, &mut janelas_5s); }
+            if let Some(t) = cortador.encerrar() { enviar(app, &t, taxa, inicio_fala, id, ajustes); }
+            resumo(app, &cortador);
             avisar(false);
             meu_chrome::registrar(app, "voz: microfone fechado"); return Ok(Fim::Parou);
         }
@@ -216,46 +213,59 @@ fn capturar_com(app: &AppHandle, parar: &std::sync::mpsc::Receiver<()>, dev: cpa
             meu_chrome::registrar(app, &format!("voz: {nome_dev} entregando áudio"));
             avisar_microfone(app, nome_dev, true, "");
         }
-        for bloco in pedaco.chunks(janela.max(1)) {
-            let rms = (bloco.iter().map(|x| x * x).sum::<f32>() / bloco.len() as f32).sqrt();
-            let limiar = (ruido * 3.0).max(0.004);
-            let voz = rms > limiar;
-            if !voz { ruido = ruido * 0.95 + rms * 0.05; }
-            if rms > max_5s { max_5s = rms; }
-            blocos_5s += 1;
-            if blocos_5s >= 50 { meu_chrome::registrar(app, &format!("voz: nível máx {:.4} / ruído {:.4} / limiar {:.4} nos últimos 5 s", max_5s, ruido, limiar)); max_5s = 0.0; blocos_5s = 0; }
-            if voz { if !em_fala { em_fala = true; inicio_fala = agora_ms(); avisar(true); } silencio_ms = 0; }
-            else if em_fala { silencio_ms += 100; }
-            if em_fala { fala.extend_from_slice(bloco); }
-            let dur_ms = (fala.len() as u64 * 1000) / taxa as u64;
-            if em_fala && ((silencio_ms >= 800 && dur_ms >= 1000) || dur_ms >= ajustes.maximo_ms) {
-                if dur_ms >= 1000 { enviar(app, &fala, taxa, inicio_fala, id, ajustes); }
-                fala.clear(); em_fala = false; silencio_ms = 0; avisar(false);
+        for e in cortador.empurrar(&pedaco) { tratar(app, e, taxa, &mut inicio_fala, id, ajustes, &avisar, &mut max_5s, &mut janelas_5s); }
+        if ultimo_resumo.elapsed() >= std::time::Duration::from_secs(300) { resumo(app, &cortador); ultimo_resumo = std::time::Instant::now(); }
+    }
+}
+
+/// Reage a um evento do cortador: acende/apaga a barra, envia o trecho, escreve o nível no diário.
+#[allow(clippy::too_many_arguments)]
+fn tratar(app: &AppHandle, e: Evento, taxa: usize, inicio_fala: &mut u64, id: &str, ajustes: Ajustes, avisar: &dyn Fn(bool), max_5s: &mut f32, janelas_5s: &mut u32) {
+    match e {
+        Evento::Fala(true) => { *inicio_fala = agora_ms(); avisar(true); }
+        Evento::Fala(false) => avisar(false),
+        Evento::Trecho(t) => {
+            // A hora é a de quando a pessoa COMEÇOU a falar, não a do pré-roll.
+            enviar(app, &t, taxa, inicio_fala.saturating_sub(t.pre_ms), id, ajustes);
+        }
+        Evento::Janela { rms, piso, limiar } => {
+            if rms > *max_5s { *max_5s = rms; }
+            *janelas_5s += 1;
+            if *janelas_5s >= 50 {
+                meu_chrome::registrar(app, &format!("voz: nível máx {:.4} / piso {:.4} / limiar {:.4} nos últimos 5 s", max_5s, piso, limiar));
+                *max_5s = 0.0; *janelas_5s = 0;
             }
-            if em_fala && silencio_ms >= 800 && dur_ms < 1000 { fala.clear(); em_fala = false; silencio_ms = 0; avisar(false); }
         }
     }
 }
 
-/// Reamostra para 16 kHz mono, empacota em WAV e manda para a página transcrever.
-fn enviar(app: &AppHandle, amostras: &[f32], taxa: usize, hora: u64, id: &str, ajustes: Ajustes) {
-    let alvo = 16000usize;
-    let passo = taxa as f32 / alvo as f32;
-    let n = (amostras.len() as f32 / passo) as usize;
+/// Para o diário: quanto do que foi captado virou trecho e o tamanho médio deles — é o que
+/// diz, sem guardar áudio nenhum, se o corte está bom (muito trecho curto = fala picotada).
+fn resumo(app: &AppHandle, c: &Cortador) {
+    let s = c.estatisticas();
+    if s.trechos == 0 { return; }
+    meu_chrome::registrar(app, &format!(
+        "voz: resumo — {} trechos, média {:.1} s, fala em {:.0}% do tempo, piso {:.4}",
+        s.trechos, s.trechos_ms as f32 / s.trechos as f32 / 1000.0,
+        s.fala_ms as f32 * 100.0 / s.tempo_ms.max(1) as f32, c.piso(),
+    ));
+}
+
+/// Passa-alta, reamostra para 16 kHz com filtro, empacota em WAV e manda para a página transcrever.
+fn enviar(app: &AppHandle, trecho: &Trecho, taxa: usize, hora: u64, id: &str, ajustes: Ajustes) {
+    let amostras = voz_dsp::preparar(&trecho.amostras, taxa);
+    let alvo = voz_dsp::ALVO_HZ as u32;
     let mut cur = std::io::Cursor::new(Vec::<u8>::new());
     {
-        let spec = hound::WavSpec { channels: 1, sample_rate: alvo as u32, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let spec = hound::WavSpec { channels: 1, sample_rate: alvo, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
         let mut w = match hound::WavWriter::new(&mut cur, spec) { Ok(w) => w, Err(_) => return };
-        for i in 0..n {
-            let pos = i as f32 * passo;
-            let a = amostras[(pos as usize).min(amostras.len() - 1)];
-            let _ = w.write_sample((a.clamp(-1.0, 1.0) * 32767.0) as i16);
-        }
+        for a in &amostras { let _ = w.write_sample(*a); }
         let _ = w.finalize();
     }
+    let segundos = amostras.len() as f32 / alvo as f32;
     let b64 = base64_simples(&cur.into_inner());
-    meu_chrome::registrar(app, &format!("voz: trecho de {:.1} s enviado para transcrever ({} KB)", n as f32 / alvo as f32, b64.len() / 1024));
-    let _ = app.emit(ajustes.evento_audio, json!({ "id": id, "wav_base64": b64, "hora": hora, "segundos": n as f32 / alvo as f32 }));
+    meu_chrome::registrar(app, &format!("voz: trecho de {:.1} s ({:.1} s de fala) enviado para transcrever ({} KB)", segundos, trecho.fala_ms as f32 / 1000.0, b64.len() / 1024));
+    let _ = app.emit(ajustes.evento_audio, json!({ "id": id, "wav_base64": b64, "hora": hora, "segundos": segundos }));
 }
 
 fn base64_simples(d: &[u8]) -> String {
