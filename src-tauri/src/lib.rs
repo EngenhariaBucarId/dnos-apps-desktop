@@ -18,6 +18,9 @@ mod gravador;
 mod maquina;
 mod olhar;
 mod exploracao;
+mod icone;
+#[cfg(target_os = "macos")]
+mod icone_dock;
 #[cfg(test)]
 mod olhar_acl;
 mod meu_chrome;
@@ -167,7 +170,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
 })();
 "#;
 
@@ -176,7 +179,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -379,6 +382,7 @@ pub fn run() {
             gravador::instalar(app.handle());
             // Aprenda comigo, fase 1 (13/09): gravador da máquina toda (só macOS).
             maquina::instalar(app.handle());
+            icone::instalar(app.handle());
             olhar::instalar(app.handle());
             exploracao::instalar(app.handle());
             // Barra dentro do Chrome da pessoa e voz para notas.
