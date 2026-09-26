@@ -145,9 +145,20 @@ fn validar_passo(p:&Value)->bool {
 /// sozinho; só apagar, substituir, enviar/publicar e comprar pedem confirmação.
 /// Editar dentro do app (cortar, mover, digitar) segue sozinho: a rodada exige
 /// que a pessoa tenha preparado uma cópia de teste.
+/// Janela de escolher arquivo (um botão Abrir/Carregar/Upload/Escolher ao lado
+/// de Cancelar). O que se faz nela pode mandar um arquivo do computador para
+/// fora; decisão do Rodrigo (26/09, opção A): upload sempre espera a pessoa.
+fn eh_seletor_de_arquivo(leitura:&Value)->bool {
+ let Some(cs)=leitura["acessibilidade"]["controles"].as_array() else {return false};
+ let tem=|nomes:&[&str]|cs.iter().any(|c|{let t=c["titulo"].as_str().unwrap_or("").trim().to_lowercase();nomes.contains(&t.as_str())});
+ tem(&["abrir","open","carregar","upload","escolher","choose","enviar","upload files"])&&tem(&["cancelar","cancel"])
+}
 fn precisa_aprovar(s:&Sessao,p:&Value)->bool {
  let tipo=p["tipo"].as_str().unwrap_or("");
  if tipo=="esperar"||(tipo=="menu"&&p["listar"]==true){return false;}
+ // No seletor de arquivo, clicar, digitar e Enter esperam a pessoa (rolar e
+ // passar o mouse não escolhem nada).
+ if !["passar","rolar"].contains(&tipo){if let Some((_,_,l))=&s.ultima{if eh_seletor_de_arquivo(l){return true;}}}
  if !s.autonomia||p["risco"]!="normal"{return true;}
  // Cmd+Delete manda para o Lixo no Finder e apaga em vários apps.
  if tipo=="tecla"{let t=p["tecla"].as_str().unwrap_or("");let tem=|n:&str|p["mods"].as_array().map(|m|m.iter().any(|x|x==n)).unwrap_or(false);
@@ -164,7 +175,7 @@ fn precisa_aprovar(s:&Sessao,p:&Value)->bool {
    if let Some(cs)=leitura["acessibilidade"]["controles"].as_array(){for c in cs {let a=&c["ret"];if let (Some(cx),Some(cy),Some(w),Some(h))=(a["x"].as_f64(),a["y"].as_f64(),a["w"].as_f64(),a["h"].as_f64()){if x>=cx&&x<=cx+w&&y>=cy&&y<=cy+h{rotulo.push_str(&format!(" {} {}",c["titulo"],c["descricao"]).to_lowercase());}}}}
   }
  }
- ["public","enviar","send","share","compartilh","apagar","exclu","delete","remover","lixo","trash","comprar","purchase","substitu","replace","pagamento","assinar"].iter().any(|v|rotulo.contains(v))
+ ["public","enviar","send","share","compartilh","apagar","exclu","delete","remover","lixo","trash","comprar","purchase","substitu","replace","pagamento","assinar","upload","carregar","anexar","attach"].iter().any(|v|rotulo.contains(v))
 }
 fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String>{
  let geracao=g.conexao.as_ref().ok_or("desconectado")?.0;
@@ -283,6 +294,15 @@ pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(
   assert!(!ok(json!({"tipo":"menu","descricao":"x","risco":"normal","caminho":[]})));
   assert!(ok(json!({"tipo":"menu","descricao":"menus do topo","risco":"normal","caminho":[],"listar":true})));
   assert!(!ok(json!({"tipo":"esperar","descricao":"x","risco":"normal","ms":60000})));
+ }
+ #[test]fn reconhece_seletor_de_arquivo(){
+  let janela=|botoes:&[&str]|json!({"acessibilidade":{"controles":botoes.iter().map(|b|json!({"papel":"AXButton","titulo":b})).collect::<Vec<_>>()}});
+  assert!(eh_seletor_de_arquivo(&janela(&["Cancelar","Abrir"])));
+  assert!(eh_seletor_de_arquivo(&janela(&["Cancel","Open"])));
+  assert!(eh_seletor_de_arquivo(&janela(&["Carregar","Cancelar"])));
+  assert!(!eh_seletor_de_arquivo(&janela(&["Exportar","Cancelar"])));
+  assert!(!eh_seletor_de_arquivo(&janela(&["Abrir"])));
+  assert!(!eh_seletor_de_arquivo(&json!({})));
  }
  #[test]fn guarda_so_os_ultimos_passos(){
   let mut p=vec![];for i in 0..(MAX_PASSOS+5){registrar_passo(&mut p,json!({"n":i}));}
