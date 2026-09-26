@@ -11,7 +11,13 @@ use crate::maquina::{self,ReservaDeUso};
 #[cfg(not(any(target_os="macos",windows)))] const AJUDANTE:&[u8]=&[];
 use crate::maquina::sem_console;
 struct Sessao { id:String,agente:String,nome:String,app_nome:String,bundle:String,ate:u64,autonomia:bool,acoes:u32,leituras:u32,iniciada_em:u64,fase:String,
- cancelada:Arc<AtomicBool>,ocupada:bool,ultima:Option<(String,u64,Value)>,pendente:Option<Value>,resultados:Vec<(String,Value)>,_reserva:ReservaDeUso }
+ cancelada:Arc<AtomicBool>,ocupada:bool,ultima:Option<(String,u64,Value)>,pendente:Option<Value>,resultados:Vec<(String,Value)>,_reserva:ReservaDeUso,
+ // 0.8.5 (modo livre, fase 2): o chat acompanha a sessão pelo próprio app. `tipo`
+ // separa tarefa de aprendizado; `passos` são as últimas ações (descrição e
+ // resultado); `foto` é a última captura, entregue só à janela principal.
+ tipo:String,passos:Vec<Value>,foto:Option<(u64,Value)> }
+const MAX_PASSOS:usize=40;
+fn registrar_passo(passos:&mut Vec<Value>,v:Value){passos.push(v);if passos.len()>MAX_PASSOS{passos.remove(0);}}
 #[derive(Default)] pub struct Estado { conexao:Option<(u64,UnboundedSender<String>)>,sessao:Option<Sessao>,ultimo_motivo:Option<String> }
 type Compartilhado=Arc<Mutex<Estado>>;
 fn agora()->u64 {crate::gravador::agora_ms() as u64}
@@ -28,7 +34,7 @@ fn encerrar(app:&AppHandle,g:&mut Estado,motivo:&str) {
  if let Some(s)=g.sessao.take(){g.ultimo_motivo=Some(motivo.to_owned());s.cancelada.store(true,Ordering::SeqCst);enviar(g,json!({"t":"explorar-fim","sessao":s.id,"motivo":motivo}));enviar(g,json!({"t":"explorar-permissao","permitido":false}));maquina::esconder_barra(app);}
 }
 fn estado(g:&Estado)->Value {match &g.sessao {
- Some(s)=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":true,"id":s.id,"agente":s.agente,"bundle":s.bundle,"expira_em":s.ate,"acoes":s.acoes,"leituras":s.leituras,"fase":s.fase,"pendente":s.pendente}),
+ Some(s)=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":true,"id":s.id,"agente":s.agente,"bundle":s.bundle,"expira_em":s.ate,"acoes":s.acoes,"leituras":s.leituras,"fase":s.fase,"pendente":s.pendente,"tipo":s.tipo,"nome":s.nome,"app_nome":s.app_nome,"autonomia":s.autonomia,"passos":s.passos,"tem_tela":s.foto.is_some()}),
  None=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":false,"ultimo_motivo":g.ultimo_motivo})}}
 fn rotulo_fase(fase:&str)->&str {match fase {
  "aguardando"=>"Aguardando o agente iniciar", "demorado"=>"O agente ainda não iniciou; confira o chat",
@@ -58,6 +64,9 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
  let p=pedido.unwrap_or(json!({}));
  match acao.as_str(){
  "estado"=>{},"parar"=>encerrar(&app,&mut g,"pessoa"),
+ // A tela atual vai direto do app para o chat, sem passar pelo servidor.
+ "tela"=>{let s=g.sessao.as_ref().ok_or("sessao_encerrada")?;
+  return Ok(match &s.foto {Some((hora,f))=>json!({"ok":true,"hora":hora,"mime":f["mime"],"dados":f["dados"],"largura":f["largura"],"altura":f["altura"]}),None=>json!({"ok":true,"vazia":true})});},
  "autorizar"=>{
   if AJUDANTE.is_empty()||g.conexao.is_none(){return Err("Abra o Desktop atualizado e espere a conexão.".into());}
   if g.sessao.is_some(){return Err("Encerre a sessão anterior.".into());}
@@ -68,8 +77,9 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   let app_nome=p["app_nome"].as_str().unwrap_or(&bundle).chars().take(100).collect::<String>();
   let minutos=p["minutos"].as_u64().filter(|m|[5,10,15,30,60].contains(m)).ok_or("prazo_invalido")?;
   let autonomia=p["autonomia"].as_bool().unwrap_or(false);let ate=agora()+minutos*60_000;
+  let tipo=if p["tipo"]=="tarefa"{"tarefa"}else{"aprendizado"}.to_owned();
   let reserva=maquina::reservar_uso(&app,"explorando")?;
-  g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva});
+  g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva,tipo,passos:vec![],foto:None});
   maquina::mostrar_barra(&app);
   if app.get_webview_window("barra-mac").is_none(){encerrar(&app,&mut g,"barra_indisponivel");return Err("Barra indisponível".into());}
   barra(&app,g.sessao.as_ref().unwrap());
@@ -85,6 +95,7 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   if acao=="recusar" {
    s.ultima=None;
    s.resultados.push((pending["requisicao"].as_str().unwrap().into(),json!({"ok":false,"motivo":"acao_recusada"})));
+   registrar_passo(&mut s.passos,json!({"hora":agora(),"descricao":pending["passo"]["descricao"],"tipo":pending["passo"]["tipo"],"ok":false,"motivo":"recusada"}));
    if s.resultados.len()>2{s.resultados.remove(0);}barra(&app,s);
   } else {
    let requisicao=pending["requisicao"].as_str().unwrap().to_owned();
@@ -151,7 +162,7 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
  let acao=v["acao"].as_str().unwrap_or("");let agir=acao=="agir";
  if !agir&&acao!="olhar"{return Err("acao_invalida".into());}
  if s.leituras>=500||s.acoes>=300{return Err("limite_da_sessao".into());}
- let mut entrada=None;
+ let mut entrada=None;let mut resumo:Option<Value>=None;
  if agir {
   let passo=&v["passo"];
   if !validar_passo(passo){return Err("passo_invalido".into());}
@@ -166,6 +177,7 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   if !s.autonomia{p["impressao"]=leitura["impressao"].clone();}
   entrada=Some(p);
   s.ultima=None;s.acoes+=1;
+  resumo=Some(json!({"descricao":passo["descricao"],"tipo":passo["tipo"],"aprovada":aprovada}));
  }
  s.fase=if agir{"agindo"}else{"observando"}.into();s.ocupada=true;s.leituras+=1;barra(app,s);
  let cancelada=s.cancelada.clone();let bundle=s.bundle.clone();let sessao=s.id.clone();let h=app.clone();let e=app.state::<Compartilhado>().inner().clone();
@@ -189,7 +201,9 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   if let Ok(mut g)=e.lock(){if g.conexao.as_ref().map(|c|c.0)!=Some(geracao){return;}
    let Some(s)=g.sessao.as_mut() else{return};if s.id!=sessao||!Arc::ptr_eq(&s.cancelada,&cancelada)||cancelada.load(Ordering::SeqCst)||s.ate<=agora(){return;}
    s.ocupada=false;s.fase="aguardando_leitura".into();let resposta=resultado.unwrap_or_else(|motivo|json!({"ok":false,"motivo":motivo,"acao_pode_ter_ocorrido":agir}));
-   if resposta["ok"]==true{s.ultima=Some((req.clone(),agora(),resposta["leitura"].clone()));}
+   if resposta["ok"]==true{s.ultima=Some((req.clone(),agora(),resposta["leitura"].clone()));
+    if resposta["leitura"]["foto"]["dados"].is_string(){s.foto=Some((agora(),resposta["leitura"]["foto"].clone()));}}
+   if let Some(mut r)=resumo{r["hora"]=json!(agora());r["ok"]=json!(resposta["ok"]==true);if resposta["ok"]!=true{r["motivo"]=resposta["motivo"].clone();}registrar_passo(&mut s.passos,r);}
    s.resultados.push((req.clone(),resposta));if s.resultados.len()>2{s.resultados.remove(0);}barra(&h,s);
   };
  });Ok(())
@@ -248,6 +262,10 @@ pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(
   assert!(!ok(json!({"tipo":"menu","descricao":"x","risco":"normal","caminho":[]})));
   assert!(ok(json!({"tipo":"menu","descricao":"menus do topo","risco":"normal","caminho":[],"listar":true})));
   assert!(!ok(json!({"tipo":"esperar","descricao":"x","risco":"normal","ms":60000})));
+ }
+ #[test]fn guarda_so_os_ultimos_passos(){
+  let mut p=vec![];for i in 0..(MAX_PASSOS+5){registrar_passo(&mut p,json!({"n":i}));}
+  assert_eq!(p.len(),MAX_PASSOS);assert_eq!(p[0]["n"],5);assert_eq!(p[MAX_PASSOS-1]["n"],MAX_PASSOS+4);
  }
  #[test]fn nao_oferece_terminais_ou_cofres(){assert!(app_permitido("com.lemon.lvoverseas"));assert!(!app_permitido("com.apple.Terminal"));assert!(!app_permitido("com.apple.keychainaccess"));}
  #[test]fn executaveis_do_windows(){
