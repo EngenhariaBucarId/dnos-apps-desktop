@@ -294,6 +294,11 @@ pub(crate) fn mostrar_barra(app: &AppHandle) {
         .inner_size(560.0, 58.0)
         .position(0.0, 0.0)
         .decorations(false)
+        // 0.8.8: janela transparente e sem a sombra quadrada do sistema — sobrava
+        // um quadrado branco em volta da barra arredondada (a borda azul fica).
+        // No macOS, transparência exige macOSPrivateApi (tauri.conf.json).
+        .transparent(true)
+        .shadow(false)
         .always_on_top(true)
         .resizable(false)
         .skip_taskbar(true)

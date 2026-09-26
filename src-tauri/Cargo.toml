@@ -1,6 +1,6 @@
 [package]
 name = "dnos-desktop"
-version = "0.8.7"
+version = "0.8.8"
 description = "dn.os Desktop — casca do dn.os para Mac e Windows"
 authors = ["dn.ia"]
 edition = "2021"
@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
