@@ -15,7 +15,10 @@ struct Sessao { id:String,agente:String,nome:String,app_nome:String,bundle:Strin
  // 0.8.5 (modo livre, fase 2): o chat acompanha a sessão pelo próprio app. `tipo`
  // separa tarefa de aprendizado; `passos` são as últimas ações (descrição e
  // resultado); `foto` é a última captura, entregue só à janela principal.
- tipo:String,passos:Vec<Value>,foto:Option<(u64,Value)> }
+ tipo:String,passos:Vec<Value>,foto:Option<(u64,Value)>,
+ // 0.8.6 (fase 4): a autorização pode valer para até 4 apps (bundle, nome); o
+ // primeiro é o principal (`bundle`). O agente escolhe em qual olhar.
+ apps:Vec<(String,String)> }
 const MAX_PASSOS:usize=40;
 fn registrar_passo(passos:&mut Vec<Value>,v:Value){passos.push(v);if passos.len()>MAX_PASSOS{passos.remove(0);}}
 #[derive(Default)] pub struct Estado { conexao:Option<(u64,UnboundedSender<String>)>,sessao:Option<Sessao>,ultimo_motivo:Option<String> }
@@ -34,7 +37,7 @@ fn encerrar(app:&AppHandle,g:&mut Estado,motivo:&str) {
  if let Some(s)=g.sessao.take(){g.ultimo_motivo=Some(motivo.to_owned());s.cancelada.store(true,Ordering::SeqCst);enviar(g,json!({"t":"explorar-fim","sessao":s.id,"motivo":motivo}));enviar(g,json!({"t":"explorar-permissao","permitido":false}));maquina::esconder_barra(app);}
 }
 fn estado(g:&Estado)->Value {match &g.sessao {
- Some(s)=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":true,"id":s.id,"agente":s.agente,"bundle":s.bundle,"expira_em":s.ate,"acoes":s.acoes,"leituras":s.leituras,"fase":s.fase,"pendente":s.pendente,"tipo":s.tipo,"nome":s.nome,"app_nome":s.app_nome,"autonomia":s.autonomia,"passos":s.passos,"tem_tela":s.foto.is_some()}),
+ Some(s)=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":true,"id":s.id,"agente":s.agente,"bundle":s.bundle,"expira_em":s.ate,"acoes":s.acoes,"leituras":s.leituras,"fase":s.fase,"pendente":s.pendente,"tipo":s.tipo,"nome":s.nome,"app_nome":s.app_nome,"autonomia":s.autonomia,"passos":s.passos,"tem_tela":s.foto.is_some(),"apps":s.apps.iter().map(|(b,n)|json!({"bundle":b,"nome":n})).collect::<Vec<_>>()}),
  None=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":false,"ultimo_motivo":g.ultimo_motivo})}}
 fn rotulo_fase(fase:&str)->&str {match fase {
  "aguardando"=>"Aguardando o agente iniciar", "demorado"=>"O agente ainda não iniciou; confira o chat",
@@ -75,15 +78,26 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   let nome=p["nome"].as_str().unwrap_or(&agente).chars().take(100).collect::<String>();
   let bundle=p["bundle"].as_str().filter(|s|app_permitido(s)).ok_or("aplicativo_nao_permitido")?.to_owned();
   let app_nome=p["app_nome"].as_str().unwrap_or(&bundle).chars().take(100).collect::<String>();
+  let mut apps:Vec<(String,String)>=vec![(bundle.clone(),app_nome.clone())];
+  if let Some(lista)=p["apps"].as_array(){
+   for a in lista {
+    let b=a["bundle"].as_str().filter(|s|app_permitido(s)).ok_or("aplicativo_nao_permitido")?.to_owned();
+    if apps.iter().any(|(x,_)|x==&b){continue;}
+    apps.push((b.clone(),a["nome"].as_str().unwrap_or(&b).chars().take(100).collect()));
+   }
+  }
+  if apps.len()>4{return Err("apps_demais".into());}
+  // Na barra e no chat: "CapCut + Chrome".
+  let app_nome=apps.iter().map(|(_,n)|n.as_str()).collect::<Vec<_>>().join(" + ");
   let minutos=p["minutos"].as_u64().filter(|m|[5,10,15,30,60].contains(m)).ok_or("prazo_invalido")?;
   let autonomia=p["autonomia"].as_bool().unwrap_or(false);let ate=agora()+minutos*60_000;
   let tipo=if p["tipo"]=="tarefa"{"tarefa"}else{"aprendizado"}.to_owned();
   let reserva=maquina::reservar_uso(&app,"explorando")?;
-  g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva,tipo,passos:vec![],foto:None});
+  g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva,tipo,passos:vec![],foto:None,apps:apps.clone()});
   maquina::mostrar_barra(&app);
   if app.get_webview_window("barra-mac").is_none(){encerrar(&app,&mut g,"barra_indisponivel");return Err("Barra indisponível".into());}
   barra(&app,g.sessao.as_ref().unwrap());
-  enviar(&g,json!({"t":"explorar-permissao","permitido":true,"id":id,"agente":agente,"bundle":bundle,"expira_em":ate,"autonomia":autonomia}));
+  enviar(&g,json!({"t":"explorar-permissao","permitido":true,"id":id,"agente":agente,"bundle":bundle,"bundles":apps.iter().map(|(b,_)|b.clone()).collect::<Vec<_>>(),"expira_em":ate,"autonomia":autonomia}));
  },
  "aprovar"|"recusar"=>{
   let s=g.sessao.as_mut().ok_or("sessao_encerrada")?;
@@ -163,6 +177,8 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
  if !agir&&acao!="olhar"{return Err("acao_invalida".into());}
  if s.leituras>=500||s.acoes>=300{return Err("limite_da_sessao".into());}
  let mut entrada=None;let mut resumo:Option<Value>=None;
+ // Qual app ler: o pedido pode nomear um dos apps autorizados; sem nome, o principal.
+ let mut ler=match v["app"].as_str(){Some(b)=>{if !s.apps.iter().any(|(x,_)|x==b){return Err("app_fora_da_autorizacao".into());}b.to_owned()},None=>s.bundle.clone()};
  if agir {
   let passo=&v["passo"];
   if !validar_passo(passo){return Err("passo_invalido".into());}
@@ -173,14 +189,19 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   let validade=if aprovada{600_000}else{120_000};
   if v["observacao"]!=*id||agora()-ts>validade{return Err("observacao_expirada".into());}
   if !aprovada&&precisa_aprovar(s,passo){s.pendente=Some(v);barra(app,s);return Ok(());}
-  let mut p=passo.clone();p["bundle"]=json!(s.bundle);p["janela"]=leitura["janela"]["numero"].clone();p["autonomo"]=json!(s.autonomia);p["captura"]=leitura["captura"]["ret"].clone();
+  // A ação vale no app da última observação (é a janela que a pessoa vê e a
+  // impressão confere); pedir outro app sem olhar antes é recusado.
+  let observado=leitura["app"]["bundle"].as_str().unwrap_or(&s.bundle).to_owned();
+  if v["app"].is_string()&&v["app"].as_str()!=Some(observado.as_str()){return Err("observe_o_app_antes_de_agir".into());}
+  ler=observado.clone();
+  let mut p=passo.clone();p["bundle"]=json!(observado);p["janela"]=leitura["janela"]["numero"].clone();p["autonomo"]=json!(s.autonomia);p["captura"]=leitura["captura"]["ret"].clone();
   if !s.autonomia{p["impressao"]=leitura["impressao"].clone();}
   entrada=Some(p);
   s.ultima=None;s.acoes+=1;
   resumo=Some(json!({"descricao":passo["descricao"],"tipo":passo["tipo"],"aprovada":aprovada}));
  }
  s.fase=if agir{"agindo"}else{"observando"}.into();s.ocupada=true;s.leituras+=1;barra(app,s);
- let cancelada=s.cancelada.clone();let bundle=s.bundle.clone();let sessao=s.id.clone();let h=app.clone();let e=app.state::<Compartilhado>().inner().clone();
+ let cancelada=s.cancelada.clone();let bundle=ler;let sessao=s.id.clone();let h=app.clone();let e=app.state::<Compartilhado>().inner().clone();
  std::thread::spawn(move||{
   let resultado=(||->Result<Value,String>{
    let mut menu=Value::Null;

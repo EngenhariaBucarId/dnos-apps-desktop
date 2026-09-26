@@ -395,7 +395,7 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                 espera = 5;
                 let (mut tx, mut rx) = ws.split();
                 let versao = app.package_info().version.to_string();
-                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao, "capacidades": ["olhar-v1", "explorar-v1"], "sistema": sistema() }).to_string().into())).await.is_err() { continue; }
+                if tx.send(Message::Text(json!({ "t": "auth", "token": token, "versao": versao, "capacidades": ["olhar-v1", "explorar-v1", "explorar-v2"], "sistema": sistema() }).to_string().into())).await.is_err() { continue; }
                 meu_chrome::registrar(&app, "no-mac: conectado ao relay");
                 // Andamento do roteiro → relay (só os eventos com id, que vieram de lá).
                 let (para_relay, mut fila) = mpsc::unbounded_channel::<String>();
