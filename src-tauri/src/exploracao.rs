@@ -34,7 +34,7 @@ fn app_permitido(s:&str)->bool {
 }
 fn enviar(g:&Estado,v:Value) {if let Some((_,tx))=&g.conexao {let _=tx.send(v.to_string());}}
 fn encerrar(app:&AppHandle,g:&mut Estado,motivo:&str) {
- if let Some(s)=g.sessao.take(){g.ultimo_motivo=Some(motivo.to_owned());s.cancelada.store(true,Ordering::SeqCst);enviar(g,json!({"t":"explorar-fim","sessao":s.id,"motivo":motivo}));enviar(g,json!({"t":"explorar-permissao","permitido":false}));maquina::esconder_barra(app);}
+ if let Some(s)=g.sessao.take(){crate::meu_chrome::registrar(app,&format!("explorar: sessão {} encerrada ({motivo})",&s.id[..8.min(s.id.len())]));g.ultimo_motivo=Some(motivo.to_owned());s.cancelada.store(true,Ordering::SeqCst);enviar(g,json!({"t":"explorar-fim","sessao":s.id,"motivo":motivo}));enviar(g,json!({"t":"explorar-permissao","permitido":false}));maquina::esconder_barra(app);}
 }
 fn estado(g:&Estado)->Value {match &g.sessao {
  Some(s)=>json!({"disponivel":!AJUDANTE.is_empty(),"conectado":g.conexao.is_some(),"ativo":true,"id":s.id,"agente":s.agente,"bundle":s.bundle,"expira_em":s.ate,"acoes":s.acoes,"leituras":s.leituras,"fase":s.fase,"pendente":s.pendente,"tipo":s.tipo,"nome":s.nome,"app_nome":s.app_nome,"autonomia":s.autonomia,"passos":s.passos,"tem_tela":s.foto.is_some(),"apps":s.apps.iter().map(|(b,n)|json!({"bundle":b,"nome":n})).collect::<Vec<_>>()}),
@@ -97,6 +97,7 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   maquina::mostrar_barra(&app);
   if app.get_webview_window("barra-mac").is_none(){encerrar(&app,&mut g,"barra_indisponivel");return Err("Barra indisponível".into());}
   barra(&app,g.sessao.as_ref().unwrap());
+  crate::meu_chrome::registrar(&app,&format!("explorar: sessão {} autorizada ({}, {minutos} min)",&id[..8],g.sessao.as_ref().map(|s|s.app_nome.as_str()).unwrap_or("?")));
   enviar(&g,json!({"t":"explorar-permissao","permitido":true,"id":id,"agente":agente,"bundle":bundle,"bundles":apps.iter().map(|(b,_)|b.clone()).collect::<Vec<_>>(),"expira_em":ate,"autonomia":autonomia}));
  },
  "aprovar"|"recusar"=>{
@@ -240,11 +241,21 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
   };
  });Ok(())
 }
-pub fn receber(app:&AppHandle,geracao:u64,v:&Value){
+/// 0.8.9 (27/09): pedido que não pode ser atendido recebe resposta com o motivo e
+/// vai para o diário. Antes a casca ficava calada e o relay fechava a sessão aos
+/// 12 s com "desktop_sem_resposta", sem ninguém saber por quê (caso da Cora).
+fn recusar(app:&AppHandle,tx:&UnboundedSender<String>,v:&Value,motivo:&str){
+ let id=v["sessao"].as_str().unwrap_or("?");
+ crate::meu_chrome::registrar(app,&format!("explorar: pedido {} da sessão {} recusado ({motivo})",v["acao"].as_str().unwrap_or("?"),&id[..8.min(id.len())]));
+ if v["requisicao"].as_str().is_some(){let _=tx.send(json!({"t":"explorar-resposta","sessao":v["sessao"],"requisicao":v["requisicao"],"resultado":{"ok":false,"motivo":motivo}}).to_string());}
+}
+pub fn receber(app:&AppHandle,geracao:u64,v:&Value,tx:&UnboundedSender<String>){
  let e=app.state::<Compartilhado>();let Ok(mut g)=e.lock()else{return};
- if g.conexao.as_ref().map(|c|c.0)!=Some(geracao){return;}
- let Some(s)=g.sessao.as_ref()else{return};if v["sessao"]!=s.id||v["agente"]!=s.agente{return;}
- if s.ate<=agora(){encerrar(app,&mut g,"tempo_esgotado");return;}
+ let pedido=!["fechar","situacao"].contains(&v["acao"].as_str().unwrap_or(""));
+ if g.conexao.as_ref().map(|c|c.0)!=Some(geracao){if pedido{recusar(app,tx,v,"conexao_antiga_no_computador");}return;}
+ let Some(s)=g.sessao.as_ref()else{if pedido{recusar(app,tx,v,"sem_sessao_no_computador");}return};
+ if v["sessao"]!=s.id||v["agente"]!=s.agente{if pedido{recusar(app,tx,v,"outra_sessao_no_computador");}return;}
+ if s.ate<=agora(){encerrar(app,&mut g,"tempo_esgotado");if pedido{recusar(app,tx,v,"tempo_esgotado");}return;}
  if v["acao"]=="fechar"{let motivo=v["motivo"].as_str().unwrap_or("concluida");encerrar(app,&mut g,motivo);return;}
  if v["acao"]=="situacao" {
   if let Some(fase)=v["fase"].as_str().filter(|f|["interpretando","decidindo"].contains(f)) {
@@ -263,7 +274,9 @@ pub fn conectar(app:&AppHandle,geracao:u64,tx:UnboundedSender<String>){
 }
 pub fn desconectar(app:&AppHandle,geracao:u64){if let Ok(mut g)=app.state::<Compartilhado>().lock(){if g.conexao.as_ref().map(|c|c.0)==Some(geracao){encerrar(app,&mut g,"computador_desconectado");g.conexao=None;}}}
 pub fn invalidar(app:&AppHandle){if let Ok(mut g)=app.state::<Compartilhado>().lock(){encerrar(app,&mut g,"identidade_alterada");g.conexao=None;}}
-pub fn pode_enviar(app:&AppHandle,raw:&str)->bool{let Ok(v)=serde_json::from_str::<Value>(raw)else{return false};if v["t"]!="explorar-resposta"{return true;}app.state::<Compartilhado>().lock().map(|g|g.sessao.as_ref().map(|s|s.id==v["sessao"]&&s.ate>agora()&&!s.cancelada.load(Ordering::SeqCst)).unwrap_or(false)).unwrap_or(false)}
+/// Recusa (ok:false só com o motivo) não carrega dado da tela: pode sair mesmo sem sessão.
+fn so_recusa(v:&Value)->bool{v["resultado"]["ok"]==false&&v["resultado"].as_object().map(|o|o.keys().all(|k|k=="ok"||k=="motivo")).unwrap_or(false)}
+pub fn pode_enviar(app:&AppHandle,raw:&str)->bool{let Ok(v)=serde_json::from_str::<Value>(raw)else{return false};if v["t"]!="explorar-resposta"{return true;}if so_recusa(&v){return true;}app.state::<Compartilhado>().lock().map(|g|g.sessao.as_ref().map(|s|s.id==v["sessao"]&&s.ate>agora()&&!s.cancelada.load(Ordering::SeqCst)).unwrap_or(false)).unwrap_or(false)}
 fn ajudante(app:&AppHandle,args:&[&str],entrada:Option<Value>,cancelada:&AtomicBool)->Result<Value,String>{
  if AJUDANTE.is_empty(){return Err("sistema_nao_suportado".into());}
  let dir=app.path().app_data_dir().map_err(|_|"pasta_indisponivel")?.join("ajudantes");std::fs::create_dir_all(&dir).map_err(|_|"pasta_indisponivel")?;
@@ -307,6 +320,11 @@ pub fn instalar(app:&AppHandle){app.manage::<Compartilhado>(Arc::new(Mutex::new(
  #[test]fn guarda_so_os_ultimos_passos(){
   let mut p=vec![];for i in 0..(MAX_PASSOS+5){registrar_passo(&mut p,json!({"n":i}));}
   assert_eq!(p.len(),MAX_PASSOS);assert_eq!(p[0]["n"],5);assert_eq!(p[MAX_PASSOS-1]["n"],MAX_PASSOS+4);
+ }
+ #[test]fn recusa_sai_sem_sessao_mas_resultado_nao(){
+  assert!(so_recusa(&json!({"t":"explorar-resposta","resultado":{"ok":false,"motivo":"sem_sessao_no_computador"}})));
+  assert!(!so_recusa(&json!({"t":"explorar-resposta","resultado":{"ok":true,"pendente":true}})));
+  assert!(!so_recusa(&json!({"t":"explorar-resposta","resultado":{"ok":false,"motivo":"x","tela":"dados"}})));
  }
  #[test]fn nao_oferece_terminais_ou_cofres(){assert!(app_permitido("com.lemon.lvoverseas"));assert!(!app_permitido("com.apple.Terminal"));assert!(!app_permitido("com.apple.keychainaccess"));}
  #[test]fn executaveis_do_windows(){

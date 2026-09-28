@@ -423,7 +423,7 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                                 Some(Ok(Message::Text(t))) => {
                                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
                                         if v["t"] == "pronto-mac" { crate::olhar::conectar(&app, geracao, para_olhar.clone()); crate::exploracao::conectar(&app, geracao, para_olhar.clone()); }
-                                        if v["t"] == "explorar" { crate::exploracao::receber(&app, geracao, &v); }
+                                        if v["t"] == "explorar" { crate::exploracao::receber(&app, geracao, &v, &para_olhar); }
                                         if v["t"] == "olhar" || v["t"] == "sessao-fim" { crate::olhar::receber(&app, geracao, &v); }
                                         if v["t"] == "roteiro" {
                                             meu_chrome::registrar(&app, &format!("no-mac: roteiro {} ({})", v["id"].as_str().unwrap_or("?").chars().take(8).collect::<String>(), v["nome"].as_str().unwrap_or("")));
@@ -451,6 +451,18 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
     }
 }
 
+/// `sub` do JWT (a conta). Sem validar assinatura: só compara com o token que a
+/// própria página entregou antes; quem autentica é o relay.
+fn dono_do_token(token: &str) -> Option<String> {
+    use base64::Engine;
+    let meio = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(meio.trim_end_matches('=')).ok()?;
+    serde_json::from_slice::<Value>(&bytes).ok()?["sub"].as_str().filter(|s| !s.is_empty()).map(str::to_owned)
+}
+fn mesma_conta(antigo: &str, novo: &str) -> bool {
+    !antigo.is_empty() && !novo.is_empty() && matches!((dono_do_token(antigo), dono_do_token(novo)), (Some(a), Some(b)) if a == b)
+}
+
 pub fn instalar(app: &AppHandle) {
     app.manage::<ExecucaoCompartilhada>(Arc::new(Mutex::new(ExecucaoMac::default())));
     app.manage::<UsoCompartilhado>(Arc::new(Mutex::new(UsoComputador::default())));
@@ -476,6 +488,15 @@ pub fn instalar(app: &AppHandle) {
             Ok(mut g) => {
                 // Mesmo endereço e token: só renova, sem religar. Token novo ou sair (vazio): nova geração.
                 if g.endereco == endereco && g.token == token && !token.is_empty() { return; }
+                // 0.8.9 (27/09): token RENOVADO da mesma conta só é guardado. O token
+                // serve para abrir a conexão; religar por renovação encerrava a sessão
+                // do computador com "identidade_alterada" (tarefas da Cora aos 31 s e
+                // 423 s). A próxima reconexão, se houver, já usa o token novo.
+                if g.endereco == endereco && mesma_conta(&g.token, &token) {
+                    g.token = token;
+                    meu_chrome::registrar(&h, "no-mac: token renovado (mesma conta, sem religar)");
+                    return;
+                }
                 g.endereco = endereco; g.token = token; g.geracao += 1; g.geracao
             }
             Err(_) => return,
@@ -646,4 +667,22 @@ pub async fn iniciar(app: AppHandle, estado: Compartilhado, nome: String, agente
     let n = gravacao["passos"].as_array().map(|a| a.len()).unwrap_or(0);
     gravador::emitir(&app, "parado", n, Some(&id), Some(motivo_fim.clone()));
     let _ = app.emit("dnos://gravador/pronta", json!({ "gravacao": gravacao }));
+}
+
+#[cfg(test)]
+mod testes_token {
+    use super::*;
+    fn jwt(sub: &str, iat: u64) -> String {
+        use base64::Engine;
+        let b = |v: Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
+        format!("{}.{}.assinatura", b(json!({"alg":"HS256"})), b(json!({"sub": sub, "iat": iat})))
+    }
+    #[test]
+    fn token_renovado_da_mesma_conta_nao_religa() {
+        assert!(mesma_conta(&jwt("pessoa-a", 1), &jwt("pessoa-a", 2)));
+        assert!(!mesma_conta(&jwt("pessoa-a", 1), &jwt("pessoa-b", 2)));
+        assert!(!mesma_conta("", &jwt("pessoa-a", 2)));
+        assert!(!mesma_conta(&jwt("pessoa-a", 1), ""));
+        assert!(!mesma_conta("lixo", "lixo"));
+    }
 }

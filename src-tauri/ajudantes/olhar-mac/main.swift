@@ -90,7 +90,16 @@ if pedido != nil || args.first == "--explorar" {
         return false
     }
     var chegou = false
-    for _ in 0..<10 { if naFrente() { chegou = true; break }; Thread.sleep(forTimeInterval: 0.2) }
+    // 0.8.9 (27/09): com a pessoa clicando em outra tela no mesmo instante, a
+    // primeira chamada pode perder a vez. Uma segunda chamada (tirando o app do
+    // "ocultar", se for o caso) antes de desistir do passo.
+    for tentativa in 0..<2 where !chegou {
+        if tentativa > 0 {
+            if app.isHidden { app.unhide() }
+            app.activate(options: [.activateIgnoringOtherApps])
+        }
+        for _ in 0..<10 { if naFrente() { chegou = true; break }; Thread.sleep(forTimeInterval: 0.2) }
+    }
     guard chegou else { resposta(["ok":false,"motivo":"app_nao_esta_na_frente"]) }
 }
 var saida: [String: Any] = [
