@@ -113,6 +113,12 @@ jobs:
 
       - run: npm ci
 
+      # Ícone do macOS 26 (29/09): sem ele, no Tahoe o "<OS>" aparece dentro de
+      # uma placa clara. Não quebra o build se o Xcode 26 faltar.
+      - name: Ícone do macOS 26 (Assets.car)
+        if: startsWith(matrix.platform, 'macos')
+        run: bash src-tauri/icons/compilar-icone-macos26.sh
+
       # Assinatura do Mac com certificado PRÓPRIO (13/09): auto-assinado, o mesmo
       # em toda versão. O macOS guarda Acessibilidade, Tela e Microfone pela
       # impressão digital do assinante; com "ad hoc" cada versão era um app novo

@@ -20,6 +20,10 @@ jobs:
         run: bash src-tauri/ajudantes/compilar.sh
       - name: Ajudante responde
         run: src-tauri/ajudantes/dnos-gravador-mac permissoes
+      - name: Ícone do macOS 26 (Assets.car)
+        run: |
+          bash src-tauri/icons/compilar-icone-macos26.sh
+          test -f src-tauri/icons/Assets.car && echo "Assets.car OK" || echo "::warning::sem Assets.car"
       - name: cargo check
         run: cd src-tauri && cargo check 2>&1 | tail -40
       - name: cargo test

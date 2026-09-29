@@ -13,3 +13,7 @@ src-tauri/ajudantes/dnos-olhar-mac
 # ajudante do Windows compilado no CI (fonte: src-tauri/ajudantes/computador-win)
 src-tauri/ajudantes/dnos-computador-win.exe
 src-tauri/ajudantes/computador-win/target/
+
+# Gerados no CI pelo compilar-icone-macos26.sh (ícone do macOS 26)
+src-tauri/icons/Assets.car
+src-tauri/tauri.macos.conf.json
