@@ -291,7 +291,7 @@ pub(crate) fn mostrar_barra(app: &AppHandle) {
     if app.get_webview_window("barra-mac").is_some() { return; }
     let _ = tauri::WebviewWindowBuilder::new(app, "barra-mac", tauri::WebviewUrl::App("barra-mac.html".into()))
         .title("dn.os")
-        .inner_size(560.0, 58.0)
+        .inner_size(crate::barra_posicao::LARGURA, crate::barra_posicao::ALTURA)
         .position(0.0, 0.0)
         .decorations(false)
         // 0.8.8: janela transparente e sem a sombra quadrada do sistema — sobrava
@@ -305,11 +305,8 @@ pub(crate) fn mostrar_barra(app: &AppHandle) {
         .focused(false)
         .build();
     if let Some(w) = app.get_webview_window("barra-mac") {
-        // Topo, centralizada no monitor principal.
-        if let Ok(Some(m)) = w.primary_monitor() {
-            let largura = m.size().width as f64 / m.scale_factor();
-            let _ = w.set_position(tauri::LogicalPosition::new(((largura - 560.0) / 2.0).max(0.0), 8.0));
-        }
+        // 01/10: onde a pessoa deixou da última vez (arrastar), ou topo, centro.
+        crate::barra_posicao::posicionar_ao_abrir(app, &w);
     }
 }
 pub(crate) fn esconder_barra(app: &AppHandle) {
@@ -317,6 +314,7 @@ pub(crate) fn esconder_barra(app: &AppHandle) {
         if let Ok(mut g) = e.lock() { g.barra_atual = None; }
     }
     if let Some(w) = app.get_webview_window("barra-mac") { let _ = w.close(); }
+    crate::barra_posicao::fechou(app);
 }
 
 pub async fn executar(app: AppHandle, pedido: Value) {
@@ -464,6 +462,7 @@ fn mesma_conta(antigo: &str, novo: &str) -> bool {
 }
 
 pub fn instalar(app: &AppHandle) {
+    crate::barra_posicao::instalar(app);
     app.manage::<ExecucaoCompartilhada>(Arc::new(Mutex::new(ExecucaoMac::default())));
     app.manage::<UsoCompartilhado>(Arc::new(Mutex::new(UsoComputador::default())));
     app.manage::<NoMacCompartilhado>(Arc::new(Mutex::new(NoMac::default())));

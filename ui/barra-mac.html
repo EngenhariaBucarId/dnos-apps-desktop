@@ -16,6 +16,11 @@
   ação destrutiva daqui.
 
   Fala "seu computador", nunca "seu Mac": o recurso também vai para Windows.
+
+  01/10: arrasta para qualquer lugar; na reunião (reuniao/meet) minimiza numa
+  bolinha no canto direito com a foto do agente e o anel de gravando. Quem
+  muda o tamanho e o lugar da janela é a casca (barra_posicao.rs); aqui só
+  avisamos. Agente usando o computador não minimiza: o Parar fica à mão.
 -->
 <style>
   :root{
@@ -69,6 +74,29 @@
   .mic.ouvindo{color:var(--ia);box-shadow:0 0 12px var(--glow-ia)}
   .mic svg{width:12px;height:12px}
 
+  /* Alça: mostra que dá para arrastar (a barra toda arrasta, fora dos botões). */
+  .barra{cursor:grab}
+  .barra[hidden]{display:none}
+  .alca{flex:none;width:10px;height:26px;margin-right:-4px;display:grid;grid-template-columns:repeat(2,3px);gap:3px;align-content:center;justify-content:center;opacity:.45}
+  .alca i{width:3px;height:3px;border-radius:50%;background:var(--texto-fraco);display:block}
+  /* Minimizar: só na reunião. */
+  button.mini{background:var(--superficie-2);color:var(--texto-fraco);border:1px solid var(--borda-neutra);
+    width:28px;height:28px;padding:0;border-radius:9px;display:flex;align-items:center;justify-content:center}
+  button.mini:hover{background:var(--superficie-2);color:var(--texto);border-color:rgba(138,92,255,.5)}
+  button.mini svg{width:14px;height:14px}
+  /* A bolinha: a janela vira 66×66 no canto direito (a casca muda o tamanho). */
+  .bolha{position:fixed;left:4px;top:4px;width:56px;height:56px;border-radius:50%;cursor:pointer;
+    background:var(--fundo);border:1px solid rgba(138,92,255,.45);box-shadow:0 0 18px var(--glow-ia);
+    display:flex;align-items:center;justify-content:center}
+  .bolha[hidden]{display:none}
+  .bolha img,.bolha .ini{width:42px;height:42px;border-radius:50%;object-fit:cover;display:block}
+  .bolha .ini{display:flex;align-items:center;justify-content:center;background:var(--superficie-2);font-weight:600;color:var(--texto-fraco)}
+  .bolha > [hidden]{display:none}
+  .bolha .anel{inset:3px;border-radius:50%;border-color:var(--ia)}
+  .bolha .rec{position:absolute;top:1px;right:1px;width:12px;height:12px;border-radius:50%;background:var(--destrutiva);
+    border:2px solid #080d1a;animation:pisca 1.4s ease-in-out infinite}
+  @keyframes pisca{50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){ .bolha .rec{animation:none} }
   button{all:unset;cursor:pointer;flex:none;background:var(--destrutiva);color:#fff;font-weight:600;font-size:12px;
     padding:8px 14px;border-radius:999px;transition:background .15s}
   button[hidden]{display:none}
@@ -76,6 +104,7 @@
   button:focus-visible{outline:2px solid #fff;outline-offset:2px}
 </style></head><body>
 <div class="barra atuando" id="barra">
+  <div class="alca" title="Arraste para mover" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
   <div class="agente">
     <div class="inicial" id="inicial">dn</div>
     <img class="foto" id="foto" alt="" hidden>
@@ -88,8 +117,14 @@
   <span class="mic" id="mic" title="Fale para anotar">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
   </span>
+  <button class="mini" id="mini" hidden title="Minimizar (a gravação continua)" aria-label="Minimizar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 12h12"/></svg>
+  </button>
   <button id="aprovar" hidden style="background:var(--primaria)">Aprovar ação</button>
   <button id="parar" title="Parar">Parar</button>
+</div>
+<div class="bolha" id="bolha" hidden role="button" tabindex="0" aria-label="Gravando. Clique para abrir a barra.">
+  <img id="bolha-foto" alt="" hidden><span class="ini" id="bolha-ini">dn</span><i class="anel"></i><i class="rec"></i>
 </div>
 <script>
 (async () => {
@@ -99,11 +134,31 @@
   // "atuando" é o padrão: a barra nasceu da execução, e uma casca que ainda
   // não manda `modo` tem que continuar se comportando como antes.
   let modo = "atuando";
+  // 01/10: só a reunião minimiza. Com o agente agindo, o Parar fica à vista.
+  const MINIMIZA = ["reuniao", "meet"];
+  let minimizada = false;
+  const janela = window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow();
+  const arrastar = () => { try { janela && janela.startDragging(); } catch {} };
+  function minimizar() {
+    if (minimizada || !MINIMIZA.includes(modo)) return;
+    minimizada = true;
+    $("barra").hidden = true; $("bolha").hidden = false;
+    ev.emit("dnos://barra-mac/minimizar", {});
+  }
+  function restaurar() {
+    if (!minimizada) return;
+    minimizada = false;
+    $("bolha").hidden = true; $("barra").hidden = false;
+    ev.emit("dnos://barra-mac/restaurar", {});
+  }
 
   await ev.listen("dnos://barra-mac", (e) => {
     const p = e.payload || {};
     modo = ["assistindo", "olhando", "explorando", "explorar-aprovacao", "reuniao", "meet"].includes(p.modo) ? p.modo : "atuando";
     $("barra").className = "barra " + modo;
+    $("mini").hidden = !MINIMIZA.includes(modo);
+    // Mudou para um modo que não minimiza (o agente começou a agir): volta a barra.
+    if (minimizada && !MINIMIZA.includes(modo)) restaurar();
 
     const quem = p.agente || "dn.os";
     $("aprovar").hidden = modo !== "explorar-aprovacao";
@@ -121,6 +176,9 @@
     // Foto do agente (data URI, vinda do dn.os); sem foto, a inicial dele.
     if (p.foto) { $("foto").src = p.foto; $("foto").hidden = false; $("inicial").hidden = true; }
     else { $("foto").hidden = true; $("inicial").hidden = false; $("inicial").textContent = quem.slice(0, 2).toLowerCase(); }
+    if (p.foto) { $("bolha-foto").src = p.foto; $("bolha-foto").hidden = false; $("bolha-ini").hidden = true; }
+    else { $("bolha-foto").hidden = true; $("bolha-ini").hidden = false; $("bolha-ini").textContent = quem.slice(0, 2).toLowerCase(); }
+    $("bolha").title = quem + " " + acao + " — clique para abrir a barra";
 
     // Microfone só nos modos que de fato abrem o microfone desta máquina — no
     // "meet" quem ouve é o Meet, e mostrar o ícone aqui seria mentira.
@@ -140,6 +198,21 @@
   // diferentes. Pedir o estado depois de instalar o listener elimina a janela
   // em que a barra podia parecer "atuando" durante uma gravação.
   await ev.emit("dnos://barra-mac/pronta", {});
+
+  // Arrastar: a barra toda, menos os botões.
+  $("barra").addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    arrastar();
+  });
+  $("mini").onclick = minimizar;
+  // Bolinha: clique abre; arrastar (mais de 4 px) só move — a casca a devolve à borda.
+  let toque = null;
+  $("bolha").addEventListener("mousedown", (e) => { if (e.button === 0) toque = { x: e.screenX, y: e.screenY }; });
+  $("bolha").addEventListener("mousemove", (e) => {
+    if (toque && Math.abs(e.screenX - toque.x) + Math.abs(e.screenY - toque.y) > 4) { toque = null; arrastar(); }
+  });
+  $("bolha").addEventListener("mouseup", () => { if (toque) { toque = null; restaurar(); } });
+  $("bolha").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); restaurar(); } });
 
   let pendenteId = null;
   setInterval(async () => {

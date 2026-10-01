@@ -14,6 +14,7 @@ use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod barra;
+mod barra_posicao;
 mod gravador;
 mod maquina;
 mod olhar;
