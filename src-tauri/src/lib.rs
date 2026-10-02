@@ -55,7 +55,10 @@ fn navegacao_interna(url: &url::Url, host_da_instancia: &str) -> bool {
     if matches!(url.scheme(), "about" | "blob" | "data" | "javascript") {
         return true;
     }
+    // Apresentação do dn.slides embutida no chat (02/10): sem isto o quadro
+    // ficava branco e cada mensagem abria o link no navegador sozinha.
     host == host_da_instancia
+        || host == "dnslides.dnia.ai"
         || host.ends_with(".supabase.co")
         || host.ends_with(".lovable.app")
         || host.ends_with(".lovableproject.com")
@@ -171,7 +174,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
 })();
 "#;
 
@@ -470,5 +473,8 @@ mod testes {
         assert!(navegacao_interna(&url::Url::parse("https://zozy.supabase.co/auth/v1/verify").unwrap(), h));
         assert!(navegacao_interna(&url::Url::parse("https://accounts.google.com/o/oauth2").unwrap(), h));
         assert!(!navegacao_interna(&url::Url::parse("https://www.capcut.com/").unwrap(), h));
+        // Apresentação do dn.slides embutida no chat (02/10).
+        assert!(navegacao_interna(&url::Url::parse("https://dnslides.dnia.ai/p/abc?embed=1").unwrap(), h));
+        assert!(!navegacao_interna(&url::Url::parse("https://dnslides.dnia.ai.evil.com/p/abc").unwrap(), h));
     }
 }
