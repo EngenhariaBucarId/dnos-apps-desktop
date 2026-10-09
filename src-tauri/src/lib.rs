@@ -55,10 +55,12 @@ fn navegacao_interna(url: &url::Url, host_da_instancia: &str) -> bool {
     if matches!(url.scheme(), "about" | "blob" | "data" | "javascript") {
         return true;
     }
-    // Apresentação do dn.slides embutida no chat (02/10): sem isto o quadro
-    // ficava branco e cada mensagem abria o link no navegador sozinha.
+    // Produtos da Suite dn.ia embutidos no chat (02/10 dn.slides; 09/10 todos
+    // em *.dnia.ai, ex.: a dash do dn.dash): sem isto o quadro ficava branco e
+    // cada mensagem abria o link no navegador sozinha. O sufixo ".dnia.ai"
+    // (com o ponto) não deixa passar "dnia.ai.evil.com".
     host == host_da_instancia
-        || host == "dnslides.dnia.ai"
+        || host.ends_with(".dnia.ai")
         || host.ends_with(".supabase.co")
         || host.ends_with(".lovable.app")
         || host.ends_with(".lovableproject.com")
@@ -174,7 +176,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
 })();
 "#;
 
@@ -183,7 +185,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -476,5 +478,9 @@ mod testes {
         // Apresentação do dn.slides embutida no chat (02/10).
         assert!(navegacao_interna(&url::Url::parse("https://dnslides.dnia.ai/p/abc?embed=1").unwrap(), h));
         assert!(!navegacao_interna(&url::Url::parse("https://dnslides.dnia.ai.evil.com/p/abc").unwrap(), h));
+        // Todo produto da Suite dn.ia (09/10): a dash do dn.dash no chat.
+        assert!(navegacao_interna(&url::Url::parse("https://dndash.dnia.ai/v/dnv_abc?embed=1").unwrap(), h));
+        assert!(!navegacao_interna(&url::Url::parse("https://dndash.dnia.ai.evil.com/v/x").unwrap(), h));
+        assert!(!navegacao_interna(&url::Url::parse("https://evil-dnia.ai/v/x").unwrap(), h));
     }
 }
