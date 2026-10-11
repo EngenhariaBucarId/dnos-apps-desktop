@@ -25,9 +25,10 @@ jobs:
           bash src-tauri/icons/compilar-icone-macos26.sh
           test -f src-tauri/icons/Assets.car && echo "Assets.car OK" || echo "::warning::sem Assets.car"
       - name: cargo check
-        run: cd src-tauri && cargo check 2>&1 | tail -40
+        # 11/10: com "| tail" o passo passava mesmo com erro (um teste falhou e o job saiu verde)
+        run: cd src-tauri && set -o pipefail && cargo check 2>&1 | tail -40
       - name: cargo test
-        run: cd src-tauri && cargo test 2>&1 | tail -40
+        run: cd src-tauri && set -o pipefail && cargo test 2>&1 | tail -40
   windows:
     runs-on: windows-latest
     steps:
