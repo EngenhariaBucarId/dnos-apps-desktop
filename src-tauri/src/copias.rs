@@ -186,3 +186,85 @@ mod testes {
         assert!(!nome_valido(""));
     }
 }
+
+// 0.8.16: a prévia toca o vídeo direto da pasta, pelo endereço dnoscopia://localhost/<chave>/<nome> (no Windows,
+// http://dnoscopia.localhost/…). Antes a página lia o arquivo inteiro em pedaços base64 e a abertura travava ~1 s
+// por vídeo. O player pede só o pedaço que precisa (Range). A chave muda a cada abertura do app e só a página do
+// dn.os recebe (comando copias_endereco), então outra página na janela não lê a pasta.
+use std::sync::OnceLock;
+static CHAVE: OnceLock<String> = OnceLock::new();
+
+fn chave() -> &'static str {
+    CHAVE.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        let parte = || { let mut h = std::collections::hash_map::RandomState::new().build_hasher(); h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)); h.finish() };
+        format!("{:016x}{:016x}", parte(), parte())
+    })
+}
+
+#[tauri::command]
+pub fn copias_endereco() -> String {
+    #[cfg(windows)] let base = "http://dnoscopia.localhost";
+    #[cfg(not(windows))] let base = "dnoscopia://localhost";
+    format!("{base}/{}/", chave())
+}
+
+/// "bytes=a-b" | "bytes=a-" → (inicio, fim inclusivo), dentro do arquivo; pedido aberto vai até 4 MB.
+pub fn faixa(cabecalho: Option<&str>, total: u64) -> Option<(u64, u64)> {
+    if total == 0 { return None; }
+    let r = cabecalho?.trim().strip_prefix("bytes=")?;
+    let (a, b) = r.split_once('-')?;
+    let (inicio, fim) = if a.is_empty() {
+        let n: u64 = b.parse().ok()?; (total.saturating_sub(n), total - 1)
+    } else {
+        let i: u64 = a.parse().ok()?;
+        let f = if b.is_empty() { i.saturating_add(4 * 1024 * 1024 - 1) } else { b.parse().ok()? };
+        (i, f.min(total - 1))
+    };
+    (inicio <= fim && inicio < total).then_some((inicio, fim))
+}
+
+pub fn responder_protocolo(app: &AppHandle, req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::{header, Response, StatusCode};
+    let erro = |s: StatusCode| Response::builder().status(s).header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*").body(Vec::new()).unwrap();
+    let caminho = req.uri().path().trim_start_matches('/').to_string();
+    let Some((k, nome)) = caminho.split_once('/') else { return erro(StatusCode::NOT_FOUND) };
+    let nome = percent_encoding::percent_decode_str(nome).decode_utf8_lossy().to_string();
+    if k != chave() || !nome_valido(&nome) { return erro(StatusCode::FORBIDDEN); }
+    let Ok(dir) = pasta(app) else { return erro(StatusCode::NOT_FOUND) };
+    let f = dir.join(&nome);
+    let Ok(mut a) = std::fs::File::open(&f) else { return erro(StatusCode::NOT_FOUND) };
+    let total = a.metadata().map(|m| m.len()).unwrap_or(0);
+    let base = || Response::builder()
+        .header(header::CONTENT_TYPE, "video/mp4").header(header::ACCEPT_RANGES, "bytes")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*").header(header::ACCESS_CONTROL_EXPOSE_HEADERS, "content-range, content-length, accept-ranges")
+        .header(header::CACHE_CONTROL, "no-store");
+    let pedido = req.headers().get(header::RANGE).and_then(|v| v.to_str().ok());
+    use std::io::{Read, Seek, SeekFrom};
+    match faixa(pedido.or(Some("bytes=0-")), total) {
+        Some((i, fim)) => {
+            let mut buf = vec![0u8; (fim - i + 1) as usize];
+            if a.seek(SeekFrom::Start(i)).and_then(|_| a.read_exact(&mut buf)).is_err() { return erro(StatusCode::INTERNAL_SERVER_ERROR); }
+            let status = if pedido.is_some() || fim + 1 < total { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK };
+            base().status(status).header(header::CONTENT_RANGE, format!("bytes {i}-{fim}/{total}")).header(header::CONTENT_LENGTH, buf.len()).body(buf).unwrap()
+        }
+        None if total == 0 => base().status(StatusCode::OK).body(Vec::new()).unwrap(),
+        None => base().status(StatusCode::RANGE_NOT_SATISFIABLE).header(header::CONTENT_RANGE, format!("bytes */{total}")).body(Vec::new()).unwrap(),
+    }
+}
+
+#[cfg(test)]
+mod testes_faixa {
+    use super::faixa;
+    #[test]
+    fn faixas() {
+        assert_eq!(faixa(Some("bytes=0-1"), 100), Some((0, 1)));
+        assert_eq!(faixa(Some("bytes=10-"), 100), Some((10, 99)));
+        assert_eq!(faixa(Some("bytes=0-"), 10_000_000), Some((0, 4 * 1024 * 1024 - 1)));
+        assert_eq!(faixa(Some("bytes=-10"), 100), Some((90, 99)));
+        assert_eq!(faixa(Some("bytes=50-999"), 100), Some((50, 99)));
+        assert_eq!(faixa(Some("bytes=200-"), 100), None);
+        assert_eq!(faixa(Some("lixo"), 100), None);
+        assert_eq!(faixa(None, 100), None);
+    }
+}

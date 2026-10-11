@@ -3,4 +3,4 @@
 [[permission]]
 identifier = "allow-copias"
 description = "Escolher a pasta das cópias da prévia e gravar, ler, listar e apagar cópias nela."
-commands.allow = ["copias_estado", "copias_escolher_pasta", "copias_voltar", "copias_listar", "copias_ler", "copias_gravar", "copias_apagar", "copias_gravar_parte", "copias_gravar_fim", "copias_ler_parte"]
+commands.allow = ["copias_estado", "copias_escolher_pasta", "copias_voltar", "copias_listar", "copias_ler", "copias_gravar", "copias_apagar", "copias_gravar_parte", "copias_gravar_fim", "copias_ler_parte", "copias_endereco"]

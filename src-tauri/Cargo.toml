@@ -1,6 +1,6 @@
 [package]
 name = "dnos-desktop"
-version = "0.8.15"
+version = "0.8.16"
 description = "dn.os Desktop — casca do dn.os para Mac e Windows"
 authors = ["dn.ia"]
 edition = "2021"
@@ -23,6 +23,7 @@ tauri-plugin-os = "2"
 # Cópias da prévia do dn.estudio: seletor de pasta nativo
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
+percent-encoding = "2"
 serde_json = "1"
 url = "2"
 # Meu Chrome: WebSocket até a VPS e TCP local até o Chrome da pessoa
