@@ -1,0 +1,6 @@
+# Cópias da prévia do dn.estudio (0.8.14): a página publicada guarda e lê a cópia leve dos vídeos numa pasta
+# escolhida pela pessoa. Os comandos só tocam arquivos .mp4 direto nessa pasta.
+[[permission]]
+identifier = "allow-copias"
+description = "Escolher a pasta das cópias da prévia e gravar, ler, listar e apagar cópias nela."
+commands.allow = ["copias_estado", "copias_escolher_pasta", "copias_voltar", "copias_listar", "copias_ler", "copias_gravar", "copias_apagar"]
