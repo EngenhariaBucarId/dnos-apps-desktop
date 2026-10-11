@@ -234,7 +234,8 @@ mod testes {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let (visto_tx, visto_rx) = std::sync::mpsc::channel::<u8>();
         let t = std::thread::spawn(move || tocar(&quadros, Duration::from_millis(5), &rx, |q| { let _ = visto_tx.send(q[0]); }));
-        std::thread::sleep(Duration::from_millis(60));
+        // 11/10: 60 ms não davam 7 voltas na máquina do GitHub (o teste falhava escondido pelo "| tail")
+        std::thread::sleep(Duration::from_millis(400));
         tx.send(()).unwrap();
         t.join().unwrap(); // se o laço não parasse, o teste travaria aqui
         let vistos: Vec<u8> = visto_rx.try_iter().collect();
