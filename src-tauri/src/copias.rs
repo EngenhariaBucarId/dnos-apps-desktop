@@ -116,6 +116,54 @@ pub fn copias_gravar(app: AppHandle, request: Request<'_>) -> Result<(), String>
     Ok(())
 }
 
+// 0.8.15: a página publicada fala com a casca pelo IPC de texto (postMessage) — corpo binário chegava como JSON
+// ("corpo_nao_binario"). Gravar e ler vão em pedaços base64 de até 8 MB.
+use base64::Engine as _;
+const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
+#[tauri::command]
+pub async fn copias_gravar_parte(app: AppHandle, nome: String, dados: String, inicio: bool) -> Result<(), String> {
+    if !nome_valido(&nome) { return Err("nome_invalido".into()); }
+    let parcial = pasta(&app)?.join(format!("{nome}.parcial"));
+    let bytes = B64.decode(dados.as_bytes()).map_err(|_| "base64_invalido")?;
+    if bytes.len() > 12 * 1024 * 1024 { return Err("parte_grande_demais".into()); }
+    tauri::async_runtime::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).write(true).append(!inicio).truncate(inicio).open(parcial)?;
+        f.write_all(&bytes)
+    }).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn copias_gravar_fim(app: AppHandle, nome: String, prefixo: String) -> Result<(), String> {
+    if !nome_valido(&nome) { return Err("nome_invalido".into()); }
+    let dir = pasta(&app)?;
+    let parcial = dir.join(format!("{nome}.parcial"));
+    if !parcial.is_file() { return Err("sem_parcial".into()); }
+    std::fs::rename(&parcial, dir.join(&nome)).map_err(|e| e.to_string())?;
+    if !prefixo.is_empty() {
+        for (outro, _) in mp4s(&dir) { if outro != nome && outro.starts_with(&prefixo) { let _ = std::fs::remove_file(dir.join(outro)); } }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copias_ler_parte(app: AppHandle, nome: String, inicio: u64, tamanho: u64) -> Result<Value, String> {
+    if !nome_valido(&nome) { return Err("nome_invalido".into()); }
+    let f = pasta(&app)?.join(&nome);
+    if !f.is_file() { return Err("nao_existe".into()); }
+    let tamanho = tamanho.min(8 * 1024 * 1024);
+    tauri::async_runtime::spawn_blocking(move || -> std::io::Result<Value> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut a = std::fs::File::open(f)?;
+        let total = a.metadata()?.len();
+        a.seek(SeekFrom::Start(inicio.min(total)))?;
+        let mut buf = vec![0u8; tamanho.min(total.saturating_sub(inicio)) as usize];
+        a.read_exact(&mut buf)?;
+        Ok(json!({ "dados": B64.encode(&buf), "total": total }))
+    }).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn copias_apagar(app: AppHandle, nome: String) -> Result<(), String> {
     if !nome_valido(&nome) { return Err("nome_invalido".into()); }
