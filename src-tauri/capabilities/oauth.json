@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "oauth",
+  "description": "Volta do login dos conectores MCP (só a página publicada, na janela principal).",
+  "windows": [
+    "main"
+  ],
+  "remote": {
+    "urls": [
+      "https://dnos.dnia.ai/*"
+    ]
+  },
+  "permissions": [
+    "allow-oauth"
+  ]
+}

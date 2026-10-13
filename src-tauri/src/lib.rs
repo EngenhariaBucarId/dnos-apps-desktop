@@ -25,8 +25,11 @@ mod icone_dock;
 #[cfg(test)]
 mod olhar_acl;
 mod copias;
+mod oauth_retorno;
 #[cfg(test)]
 mod copias_acl;
+#[cfg(test)]
+mod oauth_acl;
 mod meu_chrome;
 mod reuniao;
 mod reuniao_meet;
@@ -179,7 +182,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
 })();
 "#;
 
@@ -188,7 +191,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -293,7 +296,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![olhar::olhar_computador, exploracao::explorar_computador,
             copias::copias_estado, copias::copias_escolher_pasta, copias::copias_voltar, copias::copias_listar, copias::copias_ler, copias::copias_gravar, copias::copias_apagar,
-            copias::copias_gravar_parte, copias::copias_gravar_fim, copias::copias_ler_parte, copias::copias_endereco])
+            copias::copias_gravar_parte, copias::copias_gravar_fim, copias::copias_ler_parte, copias::copias_endereco, oauth_retorno::oauth_ouvir])
         // 0.8.16: a prévia do dn.estudio toca o vídeo direto da pasta (Range), fora da thread da janela
         .register_asynchronous_uri_scheme_protocol("dnoscopia", |ctx, req, responder| {
             let app = ctx.app_handle().clone();

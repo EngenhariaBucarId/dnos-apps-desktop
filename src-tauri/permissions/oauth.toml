@@ -1,0 +1,6 @@
+# Volta do login dos conectores MCP (0.8.17): a página publicada pede para a casca escutar 127.0.0.1:8989 enquanto
+# a pessoa entra na conta do provedor; o código volta à página por evento.
+[[permission]]
+identifier = "allow-oauth"
+description = "Escutar a volta do login OAuth de um conector MCP em 127.0.0.1:8989."
+commands.allow = ["oauth_ouvir"]
