@@ -2,5 +2,5 @@
 # baixa o vídeo para o caminho escolhido pela pessoa.
 [[permission]]
 identifier = "allow-salvar"
-description = "Abrir a janela de salvar e baixar o vídeo final para onde a pessoa escolher; mostrar o último arquivo na pasta."
-commands.allow = ["salvar_video", "salvar_mostrar"]
+description = "Abrir a janela de salvar e gravar o vídeo final ou qualquer arquivo do dn.os (0.8.19) onde a pessoa escolher; mostrar o último arquivo na pasta."
+commands.allow = ["salvar_video", "salvar_arquivo", "salvar_mostrar"]
