@@ -1,5 +1,8 @@
 //! Sessão de aprendizado: um agente, aplicativo e rodada escolhidos pela pessoa.
 //! Cada ação consome uma observação. Nunca aceita shell, scripts ou caminhos.
+//! 0.8.22 (25/10): a sessão só nasce depois de a pessoa permitir num diálogo
+//! nativo (roteiro_confirmacao::autorizar_exploracao); enquanto ela está ativa,
+//! nenhum diálogo de confirmação abre, e a exploração não age com um aberto.
 use serde_json::{json,Value};
 use std::{io::{Read,Write},process::{Command,Stdio},sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},time::{Duration,Instant}};
 use tauri::{AppHandle,Manager};
@@ -10,6 +13,7 @@ use crate::maquina::{self,ReservaDeUso};
 #[cfg(windows)] const AJUDANTE:&[u8]=include_bytes!("../ajudantes/dnos-computador-win.exe");
 #[cfg(not(any(target_os="macos",windows)))] const AJUDANTE:&[u8]=&[];
 use crate::maquina::sem_console;
+use crate::roteiro_confirmacao::{self as confirmacao,ExploracaoPermitida,PedidoDeExploracao};
 struct Sessao { id:String,agente:String,nome:String,app_nome:String,bundle:String,ate:u64,autonomia:bool,acoes:u32,leituras:u32,iniciada_em:u64,fase:String,
  cancelada:Arc<AtomicBool>,ocupada:bool,ultima:Option<(String,u64,Value)>,pendente:Option<Value>,resultados:Vec<(String,Value)>,_reserva:ReservaDeUso,
  // 0.8.5 (modo livre, fase 2): o chat acompanha a sessão pelo próprio app. `tipo`
@@ -18,12 +22,19 @@ struct Sessao { id:String,agente:String,nome:String,app_nome:String,bundle:Strin
  tipo:String,passos:Vec<Value>,foto:Option<(u64,Value)>,
  // 0.8.6 (fase 4): a autorização pode valer para até 4 apps (bundle, nome); o
  // primeiro é o principal (`bundle`). O agente escolhe em qual olhar.
- apps:Vec<(String,String)> }
+ apps:Vec<(String,String)>,
+ // 0.8.22: prova do "Permitir" no diálogo nativo; sem ela a sessão não se monta.
+ _permitida:ExploracaoPermitida }
 const MAX_PASSOS:usize=40;
 fn registrar_passo(passos:&mut Vec<Value>,v:Value){passos.push(v);if passos.len()>MAX_PASSOS{passos.remove(0);}}
 #[derive(Default)] pub struct Estado { conexao:Option<(u64,UnboundedSender<String>)>,sessao:Option<Sessao>,ultimo_motivo:Option<String> }
 type Compartilhado=Arc<Mutex<Estado>>;
 fn agora()->u64 {crate::gravador::agora_ms() as u64}
+/// Há uma sessão de exploração valendo (o mind pode estar com o mouse e o
+/// teclado). O roteiro consulta antes de abrir o diálogo de confirmação.
+pub fn ativa(app:&AppHandle)->bool {
+ app.try_state::<Compartilhado>().map(|e|e.lock().map(|g|g.sessao.as_ref().map(|s|s.ate>agora()&&!s.cancelada.load(Ordering::SeqCst)).unwrap_or(false)).unwrap_or(true)).unwrap_or(false)
+}
 fn uuid(s:&str)->bool {s.len()==36 && s.bytes().all(|c|c.is_ascii_hexdigit()||c==b'-')}
 fn app_permitido(s:&str)->bool {
  // `_` e espaço existem em nomes de executáveis do Windows ("Adobe Premiere Pro.exe").
@@ -56,11 +67,7 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
   let url=window.url().map_err(|_|"origem_indisponivel")?;
   if url.origin()!=url::Url::parse(&crate::url_da_instancia()).map_err(|_|"instancia_invalida")?.origin(){return Err("origem_nao_autorizada".into());}
  }
- if acao=="autorizar" {
-  let h=app.clone();
-  let permissoes=tauri::async_runtime::spawn_blocking(move||ajudante(&h,&["--permissoes"],None,&AtomicBool::new(false))).await.map_err(|_|"consulta_falhou")??;
-  if permissoes["acessibilidade"]!=true||permissoes["tela"]!=true{return Err("Autorize Acessibilidade e Gravação de Tela para o dn.os antes de iniciar a exploração.".into());}
- }
+ if acao=="autorizar" {return autorizar(&app,&window,pedido.unwrap_or(json!({}))).await;}
  if acao=="apps" {let h=app.clone();return tauri::async_runtime::spawn_blocking(move||ajudante(&h,&["--apps"],None,&AtomicBool::new(false))).await.map_err(|_|"consulta_falhou")?;}
  let e=app.state::<Compartilhado>();let mut g=e.lock().map_err(|_|"sessao_indisponivel")?;
  if g.sessao.as_ref().map(|s|s.ate<=agora()).unwrap_or(false){encerrar(&app,&mut g,"tempo_esgotado");}
@@ -70,36 +77,6 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
  // A tela atual vai direto do app para o chat, sem passar pelo servidor.
  "tela"=>{let s=g.sessao.as_ref().ok_or("sessao_encerrada")?;
   return Ok(match &s.foto {Some((hora,f))=>json!({"ok":true,"hora":hora,"mime":f["mime"],"dados":f["dados"],"largura":f["largura"],"altura":f["altura"]}),None=>json!({"ok":true,"vazia":true})});},
- "autorizar"=>{
-  if AJUDANTE.is_empty()||g.conexao.is_none(){return Err("Abra o Desktop atualizado e espere a conexão.".into());}
-  if g.sessao.is_some(){return Err("Encerre a sessão anterior.".into());}
-  let id=p["id"].as_str().filter(|s|uuid(s)).ok_or("rodada_obrigatoria")?.to_owned();
-  let agente=p["agente"].as_str().filter(|s|!s.is_empty()&&s.len()<=100).ok_or("agente_obrigatorio")?.to_owned();
-  let nome=p["nome"].as_str().unwrap_or(&agente).chars().take(100).collect::<String>();
-  let bundle=p["bundle"].as_str().filter(|s|app_permitido(s)).ok_or("aplicativo_nao_permitido")?.to_owned();
-  let app_nome=p["app_nome"].as_str().unwrap_or(&bundle).chars().take(100).collect::<String>();
-  let mut apps:Vec<(String,String)>=vec![(bundle.clone(),app_nome.clone())];
-  if let Some(lista)=p["apps"].as_array(){
-   for a in lista {
-    let b=a["bundle"].as_str().filter(|s|app_permitido(s)).ok_or("aplicativo_nao_permitido")?.to_owned();
-    if apps.iter().any(|(x,_)|x==&b){continue;}
-    apps.push((b.clone(),a["nome"].as_str().unwrap_or(&b).chars().take(100).collect()));
-   }
-  }
-  if apps.len()>4{return Err("apps_demais".into());}
-  // Na barra e no chat: "CapCut + Chrome".
-  let app_nome=apps.iter().map(|(_,n)|n.as_str()).collect::<Vec<_>>().join(" + ");
-  let minutos=p["minutos"].as_u64().filter(|m|[5,10,15,30,60].contains(m)).ok_or("prazo_invalido")?;
-  let autonomia=p["autonomia"].as_bool().unwrap_or(false);let ate=agora()+minutos*60_000;
-  let tipo=if p["tipo"]=="tarefa"{"tarefa"}else{"aprendizado"}.to_owned();
-  let reserva=maquina::reservar_uso(&app,"explorando")?;
-  g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva,tipo,passos:vec![],foto:None,apps:apps.clone()});
-  maquina::mostrar_barra(&app);
-  if app.get_webview_window("barra-mac").is_none(){encerrar(&app,&mut g,"barra_indisponivel");return Err("Barra indisponível".into());}
-  barra(&app,g.sessao.as_ref().unwrap());
-  crate::meu_chrome::registrar(&app,&format!("explorar: sessão {} autorizada ({}, {minutos} min)",&id[..8],g.sessao.as_ref().map(|s|s.app_nome.as_str()).unwrap_or("?")));
-  enviar(&g,json!({"t":"explorar-permissao","permitido":true,"id":id,"agente":agente,"bundle":bundle,"bundles":apps.iter().map(|(b,_)|b.clone()).collect::<Vec<_>>(),"expira_em":ate,"autonomia":autonomia}));
- },
  "aprovar"|"recusar"=>{
   let s=g.sessao.as_mut().ok_or("sessao_encerrada")?;
   // A aprovação precisa do id que a barra acabou de mostrar; não pode aprovar
@@ -120,6 +97,67 @@ pub async fn explorar_computador(app:AppHandle,window:tauri::WebviewWindow,acao:
    }
   }
  },_=>return Err("acao_desconhecida".into())}
+ Ok(estado(&g))
+}
+/// O que a página pediu, já validado. Nada daqui vira sessão sem o diálogo.
+struct PedidoValido { id:String,agente:String,nome:String,bundle:String,apps:Vec<(String,String)>,app_nome:String,minutos:u64,autonomia:bool,tipo:String }
+fn validar_autorizacao(p:&Value)->Result<PedidoValido,String>{
+ let id=p["id"].as_str().filter(|s|uuid(s)).ok_or("rodada_obrigatoria")?.to_owned();
+ let agente=p["agente"].as_str().filter(|s|!s.is_empty()&&s.len()<=100).ok_or("agente_obrigatorio")?.to_owned();
+ let nome=p["nome"].as_str().unwrap_or(&agente).chars().take(100).collect::<String>();
+ let bundle=p["bundle"].as_str().filter(|s|app_permitido(s)).ok_or("aplicativo_nao_permitido")?.to_owned();
+ let app_nome=p["app_nome"].as_str().unwrap_or(&bundle).chars().take(100).collect::<String>();
+ let mut apps:Vec<(String,String)>=vec![(bundle.clone(),app_nome)];
+ if let Some(lista)=p["apps"].as_array(){
+  for a in lista {
+   let b=a["bundle"].as_str().filter(|s|app_permitido(s)).ok_or("aplicativo_nao_permitido")?.to_owned();
+   if apps.iter().any(|(x,_)|x==&b){continue;}
+   apps.push((b.clone(),a["nome"].as_str().unwrap_or(&b).chars().take(100).collect()));
+  }
+ }
+ if apps.len()>4{return Err("apps_demais".into());}
+ // Na barra e no chat: "CapCut + Chrome".
+ let app_nome=apps.iter().map(|(_,n)|n.as_str()).collect::<Vec<_>>().join(" + ");
+ let minutos=p["minutos"].as_u64().filter(|m|[5,10,15,30,60].contains(m)).ok_or("prazo_invalido")?;
+ let autonomia=p["autonomia"].as_bool().unwrap_or(false);
+ let tipo=if p["tipo"]=="tarefa"{"tarefa"}else{"aprendizado"}.to_owned();
+ Ok(PedidoValido{id,agente,nome,bundle,apps,app_nome,minutos,autonomia,tipo})
+}
+/// `autorizar` (0.8.22): valida, reserva o computador, pergunta à pessoa num
+/// diálogo nativo e só então cria a sessão. Recusar/fechar devolve
+/// `recusado pela pessoa` (o mesmo motivo do roteiro), e nada é criado.
+async fn autorizar(app:&AppHandle,window:&tauri::WebviewWindow,p:Value)->Result<Value,String>{
+ let h=app.clone();
+ let permissoes=tauri::async_runtime::spawn_blocking(move||ajudante(&h,&["--permissoes"],None,&AtomicBool::new(false))).await.map_err(|_|"consulta_falhou")??;
+ if permissoes["acessibilidade"]!=true||permissoes["tela"]!=true{return Err("Autorize Acessibilidade e Gravação de Tela para o dn.os antes de iniciar a exploração.".into());}
+ let v=validar_autorizacao(&p)?;
+ {
+  let e=app.state::<Compartilhado>();let mut g=e.lock().map_err(|_|"sessao_indisponivel")?;
+  if g.sessao.as_ref().map(|s|s.ate<=agora()).unwrap_or(false){encerrar(app,&mut g,"tempo_esgotado");}
+  if AJUDANTE.is_empty()||g.conexao.is_none(){return Err("Abra o Desktop atualizado e espere a conexão.".into());}
+  if g.sessao.is_some(){return Err("Encerre a sessão anterior.".into());}
+ }
+ // Reservado antes de perguntar: com o computador ocupado (roteiro rodando,
+ // gravação, reunião) a pessoa não aprova algo que falharia em seguida.
+ let reserva=maquina::reservar_uso(app,"explorando")?;
+ let pagina=window.url().ok().and_then(|u|u.host_str().map(str::to_owned)).unwrap_or_default();
+ let pedido=PedidoDeExploracao{nome:&v.nome,apps:v.apps.iter().map(|(_,n)|n.as_str()).collect(),minutos:v.minutos,autonomia:v.autonomia,tarefa:v.tipo=="tarefa",pagina:&pagina};
+ let autorizado=confirmacao::autorizar_exploracao(app,&pedido).await.map_err(String::from)?;
+ // A vaga do diálogo segue presa até a sessão estar registrada (e o Mutex,
+ // solto): nenhum diálogo de roteiro abre no meio.
+ let (permitida,_vaga)=autorizado.separar();
+ let e=app.state::<Compartilhado>();let mut g=e.lock().map_err(|_|"sessao_indisponivel")?;
+ // A pessoa pode ter levado minutos para responder: confere de novo.
+ if g.conexao.is_none(){return Err("O computador desconectou enquanto esperava a sua confirmação. Tente de novo.".into());}
+ if g.sessao.is_some(){return Err("Encerre a sessão anterior.".into());}
+ let PedidoValido{id,agente,nome,bundle,apps,app_nome,minutos,autonomia,tipo}=v;
+ let ate=agora()+minutos*60_000;
+ g.ultimo_motivo=None;g.sessao=Some(Sessao{id:id.clone(),agente:agente.clone(),nome,app_nome,bundle:bundle.clone(),ate,autonomia,acoes:0,leituras:0,iniciada_em:agora(),fase:"aguardando".into(),cancelada:Arc::new(AtomicBool::new(false)),ocupada:false,ultima:None,pendente:None,resultados:vec![],_reserva:reserva,tipo,passos:vec![],foto:None,apps:apps.clone(),_permitida:permitida});
+ maquina::mostrar_barra(app);
+ if app.get_webview_window("barra-mac").is_none(){encerrar(app,&mut g,"barra_indisponivel");return Err("Barra indisponível".into());}
+ barra(app,g.sessao.as_ref().unwrap());
+ crate::meu_chrome::registrar(app,&format!("explorar: sessão {} autorizada ({}, {minutos} min)",&id[..8],g.sessao.as_ref().map(|s|s.app_nome.as_str()).unwrap_or("?")));
+ enviar(&g,json!({"t":"explorar-permissao","permitido":true,"id":id,"agente":agente,"bundle":bundle,"bundles":apps.iter().map(|(b,_)|b.clone()).collect::<Vec<_>>(),"expira_em":ate,"autonomia":autonomia}));
  Ok(estado(&g))
 }
 const TECLAS_NOMEADAS:&[&str]=&["escape","enter","tab","espaco","esquerda","direita","cima","baixo","backspace","delete","home","end","pageup","pagedown","f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12","down","up","left","right","return","space","esc","pgup","pgdown"];
@@ -194,6 +232,9 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
  if agir {
   let passo=&v["passo"];
   if !validar_passo(passo){return Err("passo_invalido".into());}
+  // Reforço (0.8.22): com um diálogo de confirmação na tela, o agente não clica
+  // nem tecla — não pode responder no lugar da pessoa.
+  if confirmacao::dialogo_aberto(){return Err("confirmacao_aberta_no_computador".into());}
   let (ref id,ts,ref leitura)=s.ultima.as_ref().ok_or("observe_antes_de_agir")?;
   // Aprovada pela pessoa, a observação vale até 10 min: o ajudante só age se a
   // janela estiver pixel a pixel igual à observada (impressão), então esperar
@@ -223,6 +264,7 @@ fn iniciar(app:&AppHandle,g:&mut Estado,v:Value,aprovada:bool)->Result<(),String
      let fim=Instant::now()+Duration::from_millis(p["ms"].as_u64().unwrap_or(500));
      while Instant::now()<fim{if cancelada.load(Ordering::SeqCst){return Err("pessoa".into());}std::thread::sleep(Duration::from_millis(100));}
     } else {
+     if confirmacao::dialogo_aberto(){return Err("confirmacao_aberta_no_computador".into());}
      let r=ajudante(&h,&["--acao"],Some(p),&cancelada)?;if r["ok"]!=true{return Err(r["motivo"].as_str().unwrap_or("acao_falhou").into());}
      menu=r["menu"].clone();std::thread::sleep(Duration::from_millis(350));
     }
