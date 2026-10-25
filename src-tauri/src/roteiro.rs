@@ -14,6 +14,9 @@
 //! agente com o estado da tela. Estado vai para a página em `dnos://roteiro`
 //! `{estado: "rodando"|"parou"|"concluido"|"erro", passo, total, texto, motivo, tela}`
 //! e para a barra do Chrome.
+//!
+//! 25/10 (FD-07): nada roda sem a pessoa permitir num diálogo nativo da casca —
+//! vale para a página e para o mind pelo relay (ver `pedir`).
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -23,6 +26,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::meu_chrome;
+use crate::roteiro_confirmacao::{Autorizado, Origem};
 
 /// Acha um elemento pelo alvo gravado e devolve o centro dele (já rolado para a vista).
 const SCRIPT_ACHAR: &str = r#"
@@ -68,16 +72,37 @@ pub type Compartilhado = Arc<Mutex<Roteiro>>;
 
 pub fn instalar(app: &AppHandle) {
     app.manage::<Compartilhado>(Arc::new(Mutex::new(Roteiro { cancelar: None, rodando: false })));
+    crate::roteiro_confirmacao::instalar(app);
     let h = app.clone();
     app.listen_any("dnos://roteiro/executar", move |evento| {
         let v: Value = serde_json::from_str(evento.payload()).unwrap_or(json!({}));
-        let h2 = h.clone();
-        // modo "mac" (fase 2, 13/09): a máquina toda, pelo ajudante (maquina.rs).
-        if v["modo"].as_str() == Some("mac") { tauri::async_runtime::spawn(async move { crate::maquina::executar(h2, v).await }); }
-        else { tauri::async_runtime::spawn(async move { executar(h2, v).await }); }
+        pedir(&h, v, Origem::Pagina);
     });
     let h = app.clone();
     app.listen_any("dnos://roteiro/parar", move |_| { parar(&h); crate::maquina::parar(&h); });
+}
+
+/// Entrada única de roteiro (25/10, FD-07): a página (`dnos://roteiro/executar`)
+/// e o relay do nó do Mac (maquina.rs) chegam aqui. Antes de qualquer clique a
+/// pessoa confirma num diálogo nativo (roteiro_confirmacao.rs); recusou, volta o
+/// mesmo `{estado:"erro"}` de um roteiro que não rodou, com `recusado: true`.
+/// modo "mac" (fase 2, 13/09): a máquina toda, pelo ajudante (maquina.rs).
+pub fn pedir(app: &AppHandle, pedido: Value, origem: Origem) {
+    let h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mac = pedido["modo"].as_str() == Some("mac");
+        match crate::roteiro_confirmacao::autorizar(&h, &pedido, origem).await {
+            Ok(ok) if mac => crate::maquina::executar(h, pedido, ok).await,
+            Ok(ok) => executar(h, pedido, ok).await,
+            Err(motivo) => {
+                let recusado = motivo == crate::roteiro_confirmacao::RECUSADO;
+                // id/modo como em maquina.rs: o nó do Mac só repassa ao agente os eventos com id.
+                let v = if mac { json!({ "estado": "erro", "modo": "mac", "id": pedido["id"].as_str().unwrap_or(""), "nome": pedido["nome"], "bundle": pedido["bundle"], "motivo": motivo, "recusado": recusado }) }
+                        else { json!({ "estado": "erro", "nome": pedido["nome"], "motivo": motivo, "recusado": recusado }) };
+                emitir(&h, v);
+            }
+        }
+    });
 }
 
 /// Cancela o roteiro em andamento (pela página ou pelo Parar da barra do Chrome).
@@ -126,7 +151,8 @@ fn descreve(p: &Value) -> String {
     }
 }
 
-async fn executar(app: AppHandle, pedido: Value) {
+/// Só roda com `Autorizado` (a pessoa permitiu): ver `pedir`.
+async fn executar(app: AppHandle, pedido: Value, _autorizado: Autorizado) {
     let _reserva = match crate::maquina::reservar_uso(&app, "executando") {
         Ok(r) => r,
         Err(e) => return emitir(&app, json!({ "estado": "erro", "motivo": e })),

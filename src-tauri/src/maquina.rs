@@ -10,7 +10,8 @@
 //! Eventos da página:
 //!   `dnos://gravador/iniciar {nome?, modo:"mac"}` — cai aqui (gravador.rs despacha).
 //!   `dnos://maquina/permissoes {pedir?}` → `dnos://maquina/permissoes-estado {acessibilidade, tela, ajudante, casca, versao}`.
-//!   `dnos://roteiro/executar {modo:"mac", nome, criterio, passos}` (roteiro.rs despacha para cá):
+//!   `dnos://roteiro/executar {modo:"mac", nome, criterio, passos}` (roteiro.rs despacha para cá,
+//!     depois da confirmação nativa da pessoa — 25/10, FD-07):
 //!     o ajudante executa os passos no Mac (fase 2); progresso em `dnos://roteiro`
 //!     `{estado: rodando|parou|concluido|erro, modo:"mac", passo, total, texto, motivo, tela:{app, janela}}`
 //!     e numa barra flutuante ("barra-mac") com Parar; `dnos://roteiro/parar` para.
@@ -317,7 +318,8 @@ pub(crate) fn esconder_barra(app: &AppHandle) {
     crate::barra_posicao::fechou(app);
 }
 
-pub async fn executar(app: AppHandle, pedido: Value) {
+/// Só roda com `Autorizado` (a pessoa permitiu no diálogo nativo): a entrada é `roteiro::pedir`.
+pub async fn executar(app: AppHandle, pedido: Value, _autorizado: crate::roteiro_confirmacao::Autorizado) {
     let _reserva = match reservar_uso(&app, "executando") {
         Ok(r) => r,
         Err(e) => return emitir_roteiro(&app, json!({ "estado": "erro", "modo": "mac", "motivo": e })),
@@ -426,7 +428,9 @@ async fn no_mac(app: AppHandle, estado: NoMacCompartilhado, geracao: u64) {
                                         if v["t"] == "roteiro" {
                                             meu_chrome::registrar(&app, &format!("no-mac: roteiro {} ({})", v["id"].as_str().unwrap_or("?").chars().take(8).collect::<String>(), v["nome"].as_str().unwrap_or("")));
                                             let mut pedido = v.clone(); pedido["modo"] = json!("mac");
-                                            let _ = app.emit("dnos://roteiro/executar", pedido);
+                                            // 25/10 (FD-07): direto na entrada única, que pede a confirmação
+                                            // nativa; antes ia por evento global, o mesmo que a página emite.
+                                            crate::roteiro::pedir(&app, pedido, crate::roteiro_confirmacao::Origem::Relay);
                                         }
                                     }
                                 }

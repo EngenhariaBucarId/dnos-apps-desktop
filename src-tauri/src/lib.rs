@@ -37,6 +37,7 @@ mod meu_chrome;
 mod reuniao;
 mod reuniao_meet;
 mod roteiro;
+mod roteiro_confirmacao;
 mod voz;
 mod voz_dsp;
 
