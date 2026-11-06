@@ -29,8 +29,10 @@ use crate::{maquina, meu_chrome};
 const PORTA: u16 = 19340;
 /// Teto de uma sessão, igual ao da gravação.
 const TETO_MIN: u64 = 120;
-/// Quanto o agente espera na porta da sala antes de desistir (21/09/2026).
-const ESPERA_NA_PORTA_MIN: u64 = 5;
+/// Quanto o agente espera na porta da sala antes de desistir (21/09/2026; de 5
+/// para 15 min em 06/11: chamado antes de a reunião começar, ele desistia com a
+/// sala ainda vazia).
+const ESPERA_NA_PORTA_MIN: u64 = 15;
 
 /// A espera na SALA DE ESPERA do Meet.
 ///
@@ -175,13 +177,36 @@ fn abrir_chrome(app: &AppHandle, agente: &str, link: &str) -> Result<Child, Stri
         .map_err(|e| format!("não consegui abrir o Chrome do agente: {e}"))
 }
 
-fn fechar_chrome(app: &AppHandle, agente: &str) {
-    let Ok(base) = app.path().app_data_dir() else { return };
-    let alvo = base.join("chrome-agentes").join(pasta_do_agente(agente));
-    #[cfg(not(target_os = "windows"))]
-    let _ = Command::new("pkill").arg("-f").arg(format!("user-data-dir={}", alvo.display())).status();
-    #[cfg(target_os = "windows")]
-    let _ = Command::new("taskkill").args(["/F", "/IM", "chrome.exe"]).status();
+/// Fecha só o Chrome do agente, nunca o da pessoa. No Windows era `taskkill /IM
+/// chrome.exe`, que derrubava TODOS os Chromes do computador ao sair da reunião
+/// (06/11). A marca do Chrome do agente é a pasta de dados, a mesma nos 3 sistemas.
+fn fechar_chrome(app: &AppHandle, agente: &str, filho: &mut Child) {
+    if let Ok(base) = app.path().app_data_dir() {
+        let alvo = base.join("chrome-agentes").join(pasta_do_agente(agente));
+        #[cfg(not(target_os = "windows"))]
+        let _ = Command::new("pkill").arg("-f").arg(format!("user-data-dir={}", alvo.display())).status();
+        #[cfg(target_os = "windows")]
+        let _ = maquina::sem_console(&mut Command::new("powershell"))
+            .args(["-NoProfile", "-NonInteractive", "-Command", &comando_de_fechar_no_windows(&alvo.display().to_string())])
+            .status();
+    }
+    // Reserva: se o comando acima não rodar (PowerShell bloqueado na empresa), ao
+    // menos o processo que abrimos fecha. Nunca alcança outro Chrome.
+    let _ = filho.kill();
+    let _ = filho.wait();
+}
+
+/// O comando do Windows, à parte para poder ser testado em qualquer sistema. A
+/// pasta precisa terminar ali: "milo" não pode pegar o Chrome de "milo-2".
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn comando_de_fechar_no_windows(pasta: &str) -> String {
+    let pasta = pasta.replace('\'', "''");
+    format!(
+        "$p = '--user-data-dir=\"?' + [regex]::Escape('{pasta}') + '(\"|\\s|$)'; \
+         Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | \
+         Where-Object {{ $_.CommandLine -match $p }} | \
+         ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    )
 }
 
 async fn esperar_porta() -> bool {
@@ -346,13 +371,13 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
         return emitir(&app, json!({ "estado": "erro", "motivo": "esse link não é de uma reunião do Google Meet" }));
     };
 
-    let filho = match abrir_chrome(&app, &agente, &link) {
+    let mut filho = match abrir_chrome(&app, &agente, &link) {
         Ok(c) => c,
         Err(e) => return emitir(&app, json!({ "estado": "erro", "motivo": e })),
     };
     emitir(&app, json!({ "estado": "abrindo", "id": id, "agente": agente }));
     if !esperar_porta().await {
-        fechar_chrome(&app, &agente);
+        fechar_chrome(&app, &agente, &mut filho);
         return emitir(&app, json!({ "estado": "erro", "motivo": "o Chrome do agente não respondeu" }));
     }
 
@@ -367,7 +392,7 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
         achado
     };
     let Some(ws) = ws else {
-        fechar_chrome(&app, &agente);
+        fechar_chrome(&app, &agente, &mut filho);
         return emitir(&app, json!({ "estado": "erro", "motivo": "não conversei com o Chrome do agente" }));
     };
 
@@ -407,7 +432,7 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
     };
     let (_, primeiro) = mandar("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }), None, &mut prox_id);
     if tx.send(Message::Text(primeiro.to_string().into())).await.is_err() {
-        fechar_chrome(&app, &agente);
+        fechar_chrome(&app, &agente, &mut filho);
         return emitir(&app, json!({ "estado": "erro", "motivo": "o Chrome do agente caiu ao abrir" }));
     }
 
@@ -476,7 +501,9 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
                 let est = r["estado"].as_str().unwrap_or("").to_string();
                 if est != ultimo_estado {
                     ultimo_estado = est.clone();
-                    emitir(&app, json!({ "estado": est, "id": id, "agente": agente }));
+                    let mut aviso = json!({ "estado": est, "id": id, "agente": agente });
+                    if est == "aguardando" { aviso["esperaMin"] = json!(ESPERA_NA_PORTA_MIN); }
+                    emitir(&app, aviso);
                     if est == "aguardando" {
                         maquina::falar_na_barra(&app, "meet", &agente, "", "esperando alguém aceitar a entrada".into(), false);
                     } else if est == "na-reuniao" {
@@ -523,10 +550,9 @@ async fn rodar(app: AppHandle, estado: Compartilhado, id: String, agente: String
         let _ = tx.send(Message::Text(m.to_string().into())).await;
         tokio::time::sleep(std::time::Duration::from_millis(900)).await;
     }
-    fechar_chrome(&app, &agente);
+    fechar_chrome(&app, &agente, &mut filho);
     maquina::esconder_barra(&app);
     if let Ok(mut g) = estado.lock() { g.ativa = None; }
-    drop(filho);
     emitir(&app, json!({ "estado": "saiu", "id": id, "agente": agente, "motivo": motivo_fim }));
 }
 
@@ -585,13 +611,13 @@ mod testes {
     fn em(base: std::time::Instant, s: u64) -> std::time::Instant { base + std::time::Duration::from_secs(s) }
 
     #[test]
-    fn desiste_depois_de_cinco_minutos_esperando_e_nao_antes() {
+    fn desiste_depois_de_quinze_minutos_esperando_e_nao_antes() {
         let t0 = std::time::Instant::now();
         let mut p = Porta::default();
         assert!(!p.desistiu("aguardando", t0, LIMITE));
         assert!(!p.desistiu("aguardando", em(t0, 150), LIMITE), "2,5 min: o caso da Malu, ainda esperando");
-        assert!(!p.desistiu("aguardando", em(t0, 299), LIMITE));
-        assert!(p.desistiu("aguardando", em(t0, 300), LIMITE));
+        assert!(!p.desistiu("aguardando", em(t0, 899), LIMITE));
+        assert!(p.desistiu("aguardando", em(t0, 900), LIMITE));
     }
 
     #[test]
@@ -599,12 +625,12 @@ mod testes {
         let t0 = std::time::Instant::now();
         let mut p = Porta::default();
         assert!(!p.desistiu("aguardando", t0, LIMITE));
-        for s in (10..300).step_by(10) {
+        for s in (10..900).step_by(10) {
             // o Meet troca de tela por um instante: se isso zerasse o prazo, ele nunca venceria
             let estado = if s % 20 == 0 { "entrando" } else { "aguardando" };
             assert!(!p.desistiu(estado, em(t0, s), LIMITE));
         }
-        assert!(p.desistiu("entrando", em(t0, 305), LIMITE), "venceu mesmo com a oscilação");
+        assert!(p.desistiu("entrando", em(t0, 905), LIMITE), "venceu mesmo com a oscilação");
     }
 
     #[test]
@@ -614,8 +640,8 @@ mod testes {
         p.desistiu("aguardando", t0, LIMITE);
         assert!(!p.desistiu("na-reuniao", em(t0, 45), LIMITE));
         // uma espera nova (depois de sair e voltar) começa do zero
-        assert!(!p.desistiu("aguardando", em(t0, 400), LIMITE));
-        assert!(!p.desistiu("aguardando", em(t0, 500), LIMITE));
+        assert!(!p.desistiu("aguardando", em(t0, 1000), LIMITE));
+        assert!(!p.desistiu("aguardando", em(t0, 1500), LIMITE));
     }
 
     #[test]
@@ -624,6 +650,21 @@ mod testes {
         let mut p = Porta::default();
         for s in [0u64, 400, 4000] { assert!(!p.desistiu("entrando", em(t0, s), LIMITE)); }
         assert!(!p.desistiu("na-reuniao", em(t0, 5000), LIMITE));
+    }
+
+    // ── fechar só o Chrome do agente ──
+    #[test]
+    fn no_windows_fecha_pela_pasta_do_agente_e_nao_por_nome_do_programa() {
+        let c = comando_de_fechar_no_windows(r"C:\Users\Ana\AppData\Roaming\ai.dnia.dnos\chrome-agentes\milo");
+        assert!(c.contains(r"[regex]::Escape('C:\Users\Ana\AppData\Roaming\ai.dnia.dnos\chrome-agentes\milo')"));
+        assert!(c.contains("Where-Object"), "sem filtro fecharia todos os Chromes");
+        assert!(!c.contains("/IM"));
+    }
+
+    #[test]
+    fn apostrofo_no_nome_da_pasta_nao_quebra_o_comando() {
+        let c = comando_de_fechar_no_windows(r"C:\Users\D'Avila\chrome-agentes\milo");
+        assert!(c.contains(r"[regex]::Escape('C:\Users\D''Avila\chrome-agentes\milo')"));
     }
 
     /// O nome na sala vale para QUALQUER agente — não é do Milo nem da Cora.
