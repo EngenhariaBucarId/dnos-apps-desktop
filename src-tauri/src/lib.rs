@@ -14,6 +14,8 @@ use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod barra;
+// Buddy fora do dn.os (09/11): janela por cima de tudo quando a pessoa está em outro app.
+mod buddy;
 mod barra_posicao;
 mod gravador;
 mod maquina;
@@ -44,7 +46,7 @@ mod voz_dsp;
 const URL_PADRAO: &str = "https://dnos.dnia.ai";
 
 /// URL da instância: `DNOS_URL` no ambiente vence o padrão da dn.ia.
-fn url_da_instancia() -> String {
+pub(crate) fn url_da_instancia() -> String {
     std::env::var("DNOS_URL")
         .ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
@@ -186,7 +188,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, buddyFora: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
 })();
 "#;
 
@@ -195,7 +197,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, buddyFora: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -417,6 +419,8 @@ pub fn run() {
             voz::instalar(app.handle());
             // Roteiro: executa os passos mecânicos de uma habilidade direto no Chrome da pessoa.
             roteiro::instalar(app.handle());
+            // Buddy fora do dn.os (fase 4, 09/11): depois da janela principal (ouve o foco dela).
+            buddy::instalar(app.handle());
 
             // Diário: a página conta como cada carga chegou (script inicial
             // rodou? ponte do Tauri presente?) — vai para meu-chrome.log.
