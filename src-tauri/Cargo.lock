@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "dnos-desktop"
-version = "0.8.23"
+version = "0.8.24"
 dependencies = [
  "base64 0.22.1",
  "cpal",
