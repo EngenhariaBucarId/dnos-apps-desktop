@@ -179,6 +179,15 @@ fn atualizar(app: &AppHandle) {
     }
 }
 
+/// Toda criação e troca de visibilidade passa pela thread principal, uma de cada vez.
+/// 10/11: o aviso da página (`disponivel`, numa thread do runtime) e o foco da janela principal
+/// (na thread principal) chegavam juntos; os dois viam "ainda não existe janela" e criavam cada um
+/// a sua. A segunda ficava órfã, parada e sempre visível: o buddy aparecia duplicado.
+fn atualizar_na_principal(app: &AppHandle) {
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || atualizar(&h));
+}
+
 fn ler(evento: &tauri::Event) -> Value {
     serde_json::from_str::<Value>(evento.payload()).unwrap_or(Value::Null)
 }
@@ -193,7 +202,7 @@ pub fn instalar(app: &AppHandle) {
         if let Some(st) = h.try_state::<Mutex<Estado>>() {
             if let Ok(mut g) = st.lock() { g.disponivel = ligado; }
         }
-        atualizar(&h);
+        atualizar_na_principal(&h);
     });
 
     let h = app.clone();
@@ -212,12 +221,12 @@ pub fn instalar(app: &AppHandle) {
         if let Some(st) = h.try_state::<Mutex<Estado>>() {
             if let Ok(mut g) = st.lock() { g.escondido_ate_ms = agora_ms() + minutos * 60_000; }
         }
-        atualizar(&h);
+        atualizar_na_principal(&h);
         // Passado o tempo, volta sozinho (se ainda fizer sentido mostrar).
         let h2 = h.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_secs(minutos * 60 + 1)).await;
-            atualizar(&h2);
+            atualizar_na_principal(&h2);
         });
     });
 
@@ -254,7 +263,7 @@ pub fn instalar(app: &AppHandle) {
                 if let Some(st) = h.try_state::<Mutex<Estado>>() {
                     if let Ok(mut g) = st.lock() { g.principal_focada = *focada; }
                 }
-                atualizar(&h);
+                atualizar_na_principal(&h);
             }
         });
     }
