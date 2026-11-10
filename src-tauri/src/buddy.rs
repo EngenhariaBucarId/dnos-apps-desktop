@@ -29,6 +29,9 @@ const ARQUIVO: &str = "buddy-posicao.json";
 const SO_O_BUDDY: (f64, f64) = (136.0, 124.0);
 const COM_BALAO: (f64, f64) = (300.0, 320.0);
 const COM_CHAT: (f64, f64) = (400.0, 600.0);
+/// 0.8.26 (10/11): o chat aumenta pela borda (de cima, da esquerda e o canto) e tem o "Ampliar".
+const CHAT_MINIMO: (f64, f64) = (340.0, 420.0);
+const CHAT_AMPLIADO: (f64, f64) = (660.0, 800.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub(crate) enum Modo {
@@ -48,7 +51,7 @@ pub(crate) fn modo_pelo_nome(nome: &str) -> Modo {
 }
 const MARGEM: f64 = 24.0;
 /// A página da janela do buddy sabe o que esta casca faz (a janela não recebe o script da principal).
-const SCRIPT_DA_JANELA: &str = r#"window.__DNOS_DESKTOP__ = Object.assign(window.__DNOS_DESKTOP__ || {}, { versao: "__DNOS_VERSAO__", buddyFora: true, buddyChat: true, janelaDoBuddy: true });"#;
+const SCRIPT_DA_JANELA: &str = r#"window.__DNOS_DESKTOP__ = Object.assign(window.__DNOS_DESKTOP__ || {}, { versao: "__DNOS_VERSAO__", buddyFora: true, buddyChat: true, buddyRedimensionar: true, janelaDoBuddy: true });"#;
 
 #[derive(Default)]
 struct Estado {
@@ -60,6 +63,10 @@ struct Estado {
     entende_tamanho: bool,
     /// Canto de baixo à direita, onde a pessoa deixou (lógico).
     canto: Option<(f64, f64)>,
+    /// Tamanho do chat que a pessoa deixou arrastando a borda (lógico).
+    chat: Option<(f64, f64)>,
+    /// "Ampliar" ligado: o chat grande, sem mexer no tamanho guardado.
+    ampliado: bool,
 }
 
 fn agora_ms() -> u64 {
@@ -70,16 +77,36 @@ fn caminho(app: &AppHandle) -> Option<std::path::PathBuf> {
     app.path().app_data_dir().ok().map(|p| p.join(ARQUIVO))
 }
 
-fn salvar_canto(app: &AppHandle, canto: (f64, f64)) {
+fn salvar(app: &AppHandle, canto: Option<(f64, f64)>, chat: Option<(f64, f64)>) {
     if let Some(p) = caminho(app) {
         let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
-        let _ = std::fs::write(p, json!({ "canto": [canto.0, canto.1] }).to_string());
+        let par = |v: Option<(f64, f64)>| v.map(|(a, b)| json!([a, b])).unwrap_or(Value::Null);
+        let _ = std::fs::write(p, json!({ "canto": par(canto), "chat": par(chat) }).to_string());
     }
 }
 
-fn carregar_canto(app: &AppHandle) -> Option<(f64, f64)> {
-    let v: Value = caminho(app).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok())?;
-    Some((v["canto"][0].as_f64()?, v["canto"][1].as_f64()?))
+/// (canto, tamanho do chat) guardados.
+fn carregar(app: &AppHandle) -> (Option<(f64, f64)>, Option<(f64, f64)>) {
+    let v: Value = caminho(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let par = |k: &str| Some((v[k][0].as_f64()?, v[k][1].as_f64()?));
+    (par("canto"), par("chat").map(limitar_chat))
+}
+
+/// Puro: o chat nunca fica menor que o mínimo (o layout do chat quebra abaixo disso).
+pub(crate) fn limitar_chat(t: (f64, f64)) -> (f64, f64) {
+    (t.0.max(CHAT_MINIMO.0), t.1.max(CHAT_MINIMO.1))
+}
+
+/// Puro: o tamanho da janela agora. No chat: ampliado, o que a pessoa deixou, ou o padrão.
+pub(crate) fn tamanho_do_estado(modo: Modo, chat: Option<(f64, f64)>, ampliado: bool) -> (f64, f64) {
+    match modo {
+        Modo::Chat if ampliado => CHAT_AMPLIADO,
+        Modo::Chat => chat.map(limitar_chat).unwrap_or(COM_CHAT),
+        outro => tamanho_do_modo(outro),
+    }
 }
 
 /// Puro: deve mostrar a janela agora?
@@ -113,10 +140,14 @@ fn canto_padrao(app: &AppHandle) -> (f64, f64) {
 
 fn posicionar(app: &AppHandle, w: &WebviewWindow) {
     let Some(st) = app.try_state::<Mutex<Estado>>() else { return };
-    let (canto, modo) = match st.lock() { Ok(g) => (g.canto, g.modo), Err(_) => return };
+    let (canto, modo, chat, ampliado) = match st.lock() { Ok(g) => (g.canto, g.modo, g.chat, g.ampliado), Err(_) => return };
     let canto = canto.unwrap_or_else(|| canto_padrao(app));
-    let tam = tamanho_do_modo(modo);
+    let tam = tamanho_do_estado(modo, chat, ampliado);
     let (x, y) = posicao_pelo_canto(canto, tam);
+    // Só o chat (não ampliado) aumenta pela borda; o buddy sozinho e o balão têm tamanho fixo.
+    let redimensiona = modo == Modo::Chat && !ampliado;
+    let _ = w.set_resizable(redimensiona);
+    let _ = w.set_min_size(if redimensiona { Some(LogicalSize::new(CHAT_MINIMO.0, CHAT_MINIMO.1)) } else { None });
     let _ = w.set_size(LogicalSize::new(tam.0, tam.1));
     let _ = w.set_position(LogicalPosition::new(x, y));
 }
@@ -140,25 +171,29 @@ fn criar(app: &AppHandle) -> Option<WebviewWindow> {
         .initialization_script(&SCRIPT_DA_JANELA.replace("__DNOS_VERSAO__", env!("CARGO_PKG_VERSION")))
         .build()
         .ok()?;
-    // Onde a pessoa soltar fica guardado (o canto de baixo à direita, para o balão crescer para a esquerda e para cima).
+    // Onde a pessoa soltar fica guardado (o canto de baixo à direita, para o balão crescer para a esquerda e
+    // para cima), e o tamanho do chat que ela deixou arrastando a borda. Lido da janela de verdade: arrastar
+    // a borda de cima ou da esquerda mexe na posição e no tamanho ao mesmo tempo.
     let h = app.clone();
     w.on_window_event(move |ev| {
-        if let WindowEvent::Moved(p) = ev {
-            let Some(w) = h.get_webview_window(JANELA) else { return };
-            let escala = w.scale_factor().unwrap_or(1.0);
-            let pos = p.to_logical::<f64>(escala);
-            let Some(st) = h.try_state::<Mutex<Estado>>() else { return };
-            let canto = match st.lock() {
-                Ok(mut g) => {
-                    let tam = tamanho_do_modo(g.modo);
-                    let canto = (pos.x + tam.0, pos.y + tam.1);
-                    g.canto = Some(canto);
-                    canto
+        let redimensionou = matches!(ev, WindowEvent::Resized(_));
+        if !redimensionou && !matches!(ev, WindowEvent::Moved(_)) { return; }
+        let Some(w) = h.get_webview_window(JANELA) else { return };
+        let escala = w.scale_factor().unwrap_or(1.0);
+        let (Ok(p), Ok(t)) = (w.outer_position(), w.inner_size()) else { return };
+        let (pos, tam) = (p.to_logical::<f64>(escala), t.to_logical::<f64>(escala));
+        let Some(st) = h.try_state::<Mutex<Estado>>() else { return };
+        let (canto, chat) = match st.lock() {
+            Ok(mut g) => {
+                g.canto = Some((pos.x + tam.width, pos.y + tam.height));
+                if redimensionou && g.modo == Modo::Chat && !g.ampliado {
+                    g.chat = Some(limitar_chat((tam.width, tam.height)));
                 }
-                Err(_) => return,
-            };
-            salvar_canto(&h, canto);
-        }
+                (g.canto, g.chat)
+            }
+            Err(_) => return,
+        };
+        salvar(&h, canto, chat);
     });
     Some(w)
 }
@@ -193,8 +228,8 @@ fn ler(evento: &tauri::Event) -> Value {
 }
 
 pub fn instalar(app: &AppHandle) {
-    let canto = carregar_canto(app);
-    app.manage(Mutex::new(Estado { principal_focada: true, canto, ..Default::default() }));
+    let (canto, chat) = carregar(app);
+    app.manage(Mutex::new(Estado { principal_focada: true, canto, chat, ..Default::default() }));
 
     let h = app.clone();
     app.listen_any("dnos://buddy/disponivel", move |e| {
@@ -244,9 +279,11 @@ pub fn instalar(app: &AppHandle) {
 
     let h = app.clone();
     app.listen_any("dnos://buddy/tamanho", move |e| {
-        let modo = modo_pelo_nome(ler(&e)["modo"].as_str().unwrap_or("so"));
+        let carga = ler(&e);
+        let modo = modo_pelo_nome(carga["modo"].as_str().unwrap_or("so"));
+        let ampliado = modo == Modo::Chat && carga["ampliado"].as_bool().unwrap_or(false);
         if let Some(st) = h.try_state::<Mutex<Estado>>() {
-            if let Ok(mut g) = st.lock() { g.entende_tamanho = true; g.modo = modo; }
+            if let Ok(mut g) = st.lock() { g.entende_tamanho = true; g.modo = modo; g.ampliado = ampliado; }
         }
         if let Some(w) = h.get_webview_window(JANELA) {
             posicionar(&h, &w);
@@ -291,6 +328,16 @@ mod testes {
         assert!(chat.0 >= 380.0 && chat.1 >= 520.0, "o chat precisa de espaço para ler e escrever");
         // O menu (240 de largura) e o buddy cabem um em cima do outro na janela do balão.
         assert!(balao.0 >= 260.0 && balao.1 >= 300.0);
+    }
+
+    #[test]
+    fn o_chat_aumenta_mas_nao_encolhe_demais() {
+        assert_eq!(tamanho_do_estado(Modo::Chat, None, false), COM_CHAT);
+        assert_eq!(tamanho_do_estado(Modo::Chat, Some((520.0, 700.0)), false), (520.0, 700.0), "o tamanho que a pessoa deixou");
+        assert_eq!(tamanho_do_estado(Modo::Chat, Some((100.0, 100.0)), false), CHAT_MINIMO, "nunca abaixo do mínimo");
+        assert_eq!(tamanho_do_estado(Modo::Chat, Some((520.0, 700.0)), true), CHAT_AMPLIADO, "ampliado não perde o guardado");
+        assert_eq!(tamanho_do_estado(Modo::So, Some((520.0, 700.0)), true), SO_O_BUDDY);
+        assert_eq!(tamanho_do_estado(Modo::Balao, None, false), COM_BALAO);
     }
 
     #[test]
