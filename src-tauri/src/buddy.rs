@@ -11,7 +11,11 @@
 //!   página principal → `dnos://buddy/disponivel` { ligado }   (buddy pronto e a pessoa quer ver)
 //!   janela do buddy  → `dnos://buddy/abrir`                     (foca o dn.os e abre a conversa)
 //!                    → `dnos://buddy/esconder` { minutos }      (some por um tempo)
-//!                    → `dnos://buddy/balao` { aberto }          (cresce para o balão caber)
+//!                    → `dnos://buddy/balao` { aberto }          (cresce para o balão caber; 0.8.24)
+//!                    → `dnos://buddy/tamanho` { modo }          (0.8.25: "so" | "balao" | "chat")
+//!
+//! 0.8.25 (10/11, pedido do Rodrigo): o clique no buddy abre um chat ali mesmo, e a janela cresce
+//! para ele (e ganha o foco, para dar para digitar). "Abrir no dn.os" segue pelo `abrir`.
 //!   casca → principal `dnos://buddy/abrir-na-dnos`
 
 use serde_json::{json, Value};
@@ -21,17 +25,39 @@ use tauri::{AppHandle, Emitter, Listener, LogicalPosition, LogicalSize, Manager,
 
 const JANELA: &str = "buddy";
 const ARQUIVO: &str = "buddy-posicao.json";
-/// Só o buddy, e com o balão ao lado (lógico). O canto de baixo à direita fica parado.
+/// Só o buddy, com o balão ou o menu em cima dele, e com o chat (lógico). O canto de baixo à direita fica parado.
 const SO_O_BUDDY: (f64, f64) = (136.0, 124.0);
-const COM_BALAO: (f64, f64) = (420.0, 210.0);
+const COM_BALAO: (f64, f64) = (300.0, 320.0);
+const COM_CHAT: (f64, f64) = (400.0, 600.0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) enum Modo {
+    #[default]
+    So,
+    Balao,
+    Chat,
+}
+
+/// Puro: o nome que a página manda → o modo (desconhecido = só o buddy).
+pub(crate) fn modo_pelo_nome(nome: &str) -> Modo {
+    match nome {
+        "balao" => Modo::Balao,
+        "chat" => Modo::Chat,
+        _ => Modo::So,
+    }
+}
 const MARGEM: f64 = 24.0;
+/// A página da janela do buddy sabe o que esta casca faz (a janela não recebe o script da principal).
+const SCRIPT_DA_JANELA: &str = r#"window.__DNOS_DESKTOP__ = Object.assign(window.__DNOS_DESKTOP__ || {}, { versao: "__DNOS_VERSAO__", buddyFora: true, buddyChat: true, janelaDoBuddy: true });"#;
 
 #[derive(Default)]
 struct Estado {
     disponivel: bool,
     principal_focada: bool,
     escondido_ate_ms: u64,
-    balao: bool,
+    modo: Modo,
+    /// A página já fala `tamanho` (0.8.25+): o `balao` antigo, que ela manda junto, é ignorado.
+    entende_tamanho: bool,
     /// Canto de baixo à direita, onde a pessoa deixou (lógico).
     canto: Option<(f64, f64)>,
 }
@@ -66,8 +92,12 @@ pub(crate) fn posicao_pelo_canto(canto: (f64, f64), tamanho: (f64, f64)) -> (f64
     ((canto.0 - tamanho.0).max(0.0), (canto.1 - tamanho.1).max(0.0))
 }
 
-fn tamanho_atual(balao: bool) -> (f64, f64) {
-    if balao { COM_BALAO } else { SO_O_BUDDY }
+pub(crate) fn tamanho_do_modo(modo: Modo) -> (f64, f64) {
+    match modo {
+        Modo::So => SO_O_BUDDY,
+        Modo::Balao => COM_BALAO,
+        Modo::Chat => COM_CHAT,
+    }
 }
 
 /// Canto padrão: embaixo à direita do monitor principal, acima da barra de tarefas/Dock.
@@ -83,9 +113,9 @@ fn canto_padrao(app: &AppHandle) -> (f64, f64) {
 
 fn posicionar(app: &AppHandle, w: &WebviewWindow) {
     let Some(st) = app.try_state::<Mutex<Estado>>() else { return };
-    let (canto, balao) = match st.lock() { Ok(g) => (g.canto, g.balao), Err(_) => return };
+    let (canto, modo) = match st.lock() { Ok(g) => (g.canto, g.modo), Err(_) => return };
     let canto = canto.unwrap_or_else(|| canto_padrao(app));
-    let tam = tamanho_atual(balao);
+    let tam = tamanho_do_modo(modo);
     let (x, y) = posicao_pelo_canto(canto, tam);
     let _ = w.set_size(LogicalSize::new(tam.0, tam.1));
     let _ = w.set_position(LogicalPosition::new(x, y));
@@ -107,6 +137,7 @@ fn criar(app: &AppHandle) -> Option<WebviewWindow> {
         .skip_taskbar(true)
         .focused(false)
         .visible(false)
+        .initialization_script(&SCRIPT_DA_JANELA.replace("__DNOS_VERSAO__", env!("CARGO_PKG_VERSION")))
         .build()
         .ok()?;
     // Onde a pessoa soltar fica guardado (o canto de baixo à direita, para o balão crescer para a esquerda e para cima).
@@ -119,7 +150,7 @@ fn criar(app: &AppHandle) -> Option<WebviewWindow> {
             let Some(st) = h.try_state::<Mutex<Estado>>() else { return };
             let canto = match st.lock() {
                 Ok(mut g) => {
-                    let tam = tamanho_atual(g.balao);
+                    let tam = tamanho_do_modo(g.modo);
                     let canto = (pos.x + tam.0, pos.y + tam.1);
                     g.canto = Some(canto);
                     canto
@@ -194,9 +225,25 @@ pub fn instalar(app: &AppHandle) {
     app.listen_any("dnos://buddy/balao", move |e| {
         let aberto = ler(&e)["aberto"].as_bool().unwrap_or(false);
         if let Some(st) = h.try_state::<Mutex<Estado>>() {
-            if let Ok(mut g) = st.lock() { g.balao = aberto; }
+            if let Ok(mut g) = st.lock() {
+                if g.entende_tamanho { return; }
+                g.modo = if aberto { Modo::Balao } else { Modo::So };
+            }
         }
         if let Some(w) = h.get_webview_window(JANELA) { posicionar(&h, &w); }
+    });
+
+    let h = app.clone();
+    app.listen_any("dnos://buddy/tamanho", move |e| {
+        let modo = modo_pelo_nome(ler(&e)["modo"].as_str().unwrap_or("so"));
+        if let Some(st) = h.try_state::<Mutex<Estado>>() {
+            if let Ok(mut g) = st.lock() { g.entende_tamanho = true; g.modo = modo; }
+        }
+        if let Some(w) = h.get_webview_window(JANELA) {
+            posicionar(&h, &w);
+            // Para digitar no chat, a janela precisa do foco (ela nasce sem roubar o foco de ninguém).
+            if modo == Modo::Chat { let _ = w.set_focus(); }
+        }
     });
 
     // Na janela principal, o buddy de dentro assume; fora dela, este aparece.
@@ -226,9 +273,22 @@ mod testes {
     }
 
     #[test]
+    fn modos_e_tamanhos() {
+        assert_eq!(modo_pelo_nome("chat"), Modo::Chat);
+        assert_eq!(modo_pelo_nome("balao"), Modo::Balao);
+        assert_eq!(modo_pelo_nome("qualquer"), Modo::So, "desconhecido = só o buddy");
+        let (so, balao, chat) = (tamanho_do_modo(Modo::So), tamanho_do_modo(Modo::Balao), tamanho_do_modo(Modo::Chat));
+        assert!(balao.0 > so.0 && balao.1 > so.1);
+        assert!(chat.0 >= 380.0 && chat.1 >= 520.0, "o chat precisa de espaço para ler e escrever");
+        // O menu (240 de largura) e o buddy cabem um em cima do outro na janela do balão.
+        assert!(balao.0 >= 260.0 && balao.1 >= 300.0);
+    }
+
+    #[test]
     fn o_canto_de_baixo_a_direita_fica_parado() {
         assert_eq!(posicao_pelo_canto((1000.0, 800.0), SO_O_BUDDY), (1000.0 - 136.0, 800.0 - 124.0));
-        assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_BALAO), (1000.0 - 420.0, 800.0 - 210.0));
+        assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_BALAO), (1000.0 - 300.0, 800.0 - 320.0));
+        assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_CHAT), (1000.0 - 400.0, 800.0 - 600.0));
         assert_eq!(posicao_pelo_canto((50.0, 50.0), COM_BALAO), (0.0, 0.0));
     }
 }
