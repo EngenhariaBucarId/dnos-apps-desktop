@@ -77,6 +77,10 @@ fn navegacao_interna(url: &url::Url, host_da_instancia: &str) -> bool {
         || host.ends_with(".lovable.app")
         || host.ends_with(".lovableproject.com")
         || host == "accounts.google.com"
+        // O vídeo do exercício na ficha do Treino (0.8.27): só o player sem
+        // cookies. Clicar em "assistir no YouTube" sai de www.youtube.com e
+        // continua indo para o navegador.
+        || host == "www.youtube-nocookie.com"
         || host == "localhost"
 }
 
@@ -188,7 +192,7 @@ const SCRIPT_INICIAL: &str = r#"
     const alvoNovaAba = a.target === "_blank" || e.metaKey || e.ctrlKey;
     if (alvoNovaAba && externo(a.href)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
-  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, buddyFora: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
+  window.__DNOS_DESKTOP__ = { versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, buddyFora: true, videosDoYoutube: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" };
 })();
 "#;
 
@@ -197,7 +201,7 @@ const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
   const tinhaFlag = !!window.__DNOS_DESKTOP__, temTauri = !!window.__TAURI__;
-  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, buddyFora: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
+  window.__DNOS_DESKTOP__ = Object.assign({ versao: "__DNOS_VERSAO__", meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true }, window.__DNOS_DESKTOP__ || {}, { meuChrome: true, gravador: true, roteiro: true, reuniao: true, reuniaoMeet: true, reabrir: true, iconeDoApp: true, iconeAnimado: true, apresentacaoEmbutida: true, produtosEmbutidos: true, copiasEstudio: true, copiasPartes: true, copiasEndereco: true, oauthRetorno: true, salvarVideo: true, salvarArquivo: true, buddyFora: true, videosDoYoutube: true, aprendaVisao: !!window.__DNOS_GRAVADOR_MAC__, exploracao: !!window.__DNOS_COMPUTADOR__, exploracaoApps: !!window.__DNOS_COMPUTADOR__, gravadorMac: !!window.__DNOS_GRAVADOR_MAC__, roteiroMac: !!window.__DNOS_COMPUTADOR__, sistema: window.__DNOS_COMPUTADOR__ || "" });
   try { window.dispatchEvent(new CustomEvent("dnos-desktop", { detail: window.__DNOS_DESKTOP__ })); } catch {}
   let recarregou = false;
   if ((!tinhaFlag || !temTauri) && location.protocol.startsWith("http")) {
@@ -505,5 +509,7 @@ mod testes {
         assert!(navegacao_interna(&url::Url::parse("https://dndash.dnia.ai/v/dnv_abc?embed=1").unwrap(), h));
         assert!(!navegacao_interna(&url::Url::parse("https://dndash.dnia.ai.evil.com/v/x").unwrap(), h));
         assert!(!navegacao_interna(&url::Url::parse("https://evil-dnia.ai/v/x").unwrap(), h));
+        assert!(navegacao_interna(&url::Url::parse("https://www.youtube-nocookie.com/embed/abc?rel=0").unwrap(), h));
+        assert!(!navegacao_interna(&url::Url::parse("https://www.youtube.com/watch?v=abc").unwrap(), h));
     }
 }
