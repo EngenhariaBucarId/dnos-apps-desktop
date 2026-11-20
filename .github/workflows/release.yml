@@ -1,5 +1,14 @@
-# Gera os instaladores do dn.os Desktop a cada tag `v*` e publica no GitHub
-# Releases, com o `latest.json` que o updater das cascas instaladas consulta.
+# Gera os instaladores do dn.os Desktop e publica no GitHub Releases, com o
+# `latest.json` que o updater das cascas instaladas consulta.
+#
+# Dois jeitos de começar (20/11/2026): tag `v*` (do Mac do Rodrigo) ou enviar o
+# ramo `publicar` (`git push origin main:publicar`, o que as sessões do Claude
+# conseguem — elas não podem enviar tag). Nos DOIS a publicação espera a
+# aprovação no ambiente `publicacao` (Settings → Environments → Required
+# reviewers): uma versão nova chega sozinha a todos os computadores, então
+# nada sai sem uma pessoa aprovar. Sem esse revisor configurado o fluxo recusa
+# (falha fechada). Pelo ramo, a versão vem do package.json e não pode repetir
+# uma já publicada.
 #
 # Mac: assinado com certificado próprio (auto-assinado, estável entre versões)
 # — ver o passo "Certificado de assinatura do Mac". Apple Developer ID entra
@@ -9,6 +18,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+    branches: ["publicar"]
   workflow_dispatch:
 
 permissions:
@@ -26,6 +36,9 @@ permissions:
 jobs:
   rascunho:
     runs-on: ubuntu-latest
+    # A aprovação humana: o job (e tudo depois dele) só roda quando um revisor
+    # do ambiente aprova na página da execução.
+    environment: publicacao
     outputs:
       id: ${{ steps.r.outputs.result }}
     steps:
@@ -34,24 +47,50 @@ jobs:
         with:
           result-encoding: string
           script: |
-            if (!context.ref.startsWith("refs/tags/")) {
-              throw new Error("A release nasce de uma tag v*. Rode o fluxo a partir da tag.");
-            }
-            const tag = context.ref.replace("refs/tags/", "");
             const { owner, repo } = context.repo;
+            // Falha fechada: sem revisor obrigatório no ambiente, a aprovação
+            // acima não existiria e qualquer envio publicaria para todo mundo.
+            const amb = await github.request("GET /repos/{owner}/{repo}/environments/{nome}", { owner, repo, nome: "publicacao" });
+            if (!(amb.data.protection_rules || []).some((r) => r.type === "required_reviewers")) {
+              throw new Error("O ambiente `publicacao` está sem revisor obrigatório. Configure em Settings → Environments → publicacao → Required reviewers antes de publicar.");
+            }
+            const peloRamo = context.ref === "refs/heads/publicar";
+            if (!peloRamo && !context.ref.startsWith("refs/tags/v")) {
+              throw new Error("A release nasce de uma tag v* ou do ramo `publicar` (git push origin main:publicar).");
+            }
+            let tag;
+            if (peloRamo) {
+              // As três versões precisam bater; a tag nasce delas, no commit enviado.
+              const ler = async (path) => Buffer.from((await github.rest.repos.getContent({ owner, repo, path, ref: context.sha })).data.content, "base64").toString("utf8");
+              const pkg = JSON.parse(await ler("package.json")).version;
+              const conf = JSON.parse(await ler("src-tauri/tauri.conf.json")).version;
+              const cargo = (await ler("src-tauri/Cargo.toml")).match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+              if (pkg !== conf || pkg !== cargo) {
+                throw new Error(`Versões diferentes: package.json ${pkg}, tauri.conf.json ${conf}, Cargo.toml ${cargo}. Ajuste as três.`);
+              }
+              tag = `v${pkg}`;
+            } else {
+              tag = context.ref.replace("refs/tags/", "");
+            }
             const notas = [
               "Instaladores do dn.os Desktop. Mac: baixe o `.dmg`. Windows: baixe o `-setup.exe`. Linux: `.AppImage` (qualquer distro), `.deb` (Ubuntu/Debian) ou `.rpm` (Fedora).",
               "Primeira abertura sem assinatura: veja o README do repositório.",
             ].join("\n");
             const todas = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
             const existente = todas.find((r) => r.tag_name === tag);
+            if (existente && peloRamo && !existente.draft) {
+              // Pelo ramo nunca se republica: seria trocar os arquivos de uma versão que as cascas já baixaram.
+              throw new Error(`${tag} já foi publicada. Suba a versão (package.json, tauri.conf.json e Cargo.toml) antes de enviar o ramo.`);
+            }
             if (existente) {
               // Reexecução: volta ao estado de rascunho até tudo passar de novo.
-              await github.rest.repos.updateRelease({ owner, repo, release_id: existente.id, draft: true });
+              await github.rest.repos.updateRelease({ owner, repo, release_id: existente.id, draft: true, ...(peloRamo ? { target_commitish: context.sha } : {}) });
               return String(existente.id);
             }
             const nova = await github.rest.repos.createRelease({
               owner, repo, tag_name: tag, name: `dn.os Desktop ${tag}`,
+              // Pelo ramo a tag ainda não existe: o GitHub a cria neste commit quando o rascunho for publicado.
+              ...(peloRamo ? { target_commitish: context.sha } : {}),
               body: notas, draft: true, prerelease: false,
             });
             return String(nova.data.id);

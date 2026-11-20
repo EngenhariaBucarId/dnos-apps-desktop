@@ -50,10 +50,19 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ## Publicar uma versão
 
 1. Ajuste `version` em `package.json`, `src-tauri/tauri.conf.json` e
-   `src-tauri/Cargo.toml`.
-2. `git tag vX.Y.Z && git push --tags`.
-3. O workflow `release` compila Mac e Windows, cria a Release com os
-   instaladores e o `latest.json`. As cascas instaladas atualizam sozinhas.
+   `src-tauri/Cargo.toml` (e o `dnos-desktop` no `Cargo.lock`), commit no `main`.
+2. Um dos dois:
+   - `git push origin main:publicar` (o jeito das sessões do Claude, que não
+     podem enviar tag): a versão vem do `package.json`, as três têm de bater, e
+     uma versão já publicada é recusada;
+   - ou `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. **Aprovar** na página da execução do workflow `release` (Actions → release →
+   "Review deployments"). Nos dois caminhos nada compila nem publica antes da
+   aprovação de um revisor do ambiente `publicacao`; sem revisor configurado o
+   fluxo recusa.
+4. O workflow compila Mac, Windows e Linux, sobe tudo num rascunho e só publica
+   (criando a tag, no caminho do ramo) quando as três plataformas e o
+   `latest.json` estão lá. As cascas instaladas atualizam sozinhas.
 
 Secrets necessários no repositório: `TAURI_SIGNING_PRIVATE_KEY` e
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (assinatura do updater; a chave pública
