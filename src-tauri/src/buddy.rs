@@ -119,6 +119,32 @@ pub(crate) fn posicao_pelo_canto(canto: (f64, f64), tamanho: (f64, f64)) -> (f64
     ((canto.0 - tamanho.0).max(0.0), (canto.1 - tamanho.1).max(0.0))
 }
 
+/// Puro: o canto que deixa a janela inteira dentro da área útil (sem Dock nem barra de menus) de um monitor.
+/// 23/11 (Rodrigo, duas telas): o canto guardado ficou 107 px abaixo da tela externa. Só o buddy, ele quase
+/// sumia; com o balão, a janela crescia para cima e só o balão aparecia, sem o buddy para pegar e puxar.
+/// Monitor: o que contém o canto ou, se nenhum (tela desligada, arranjo trocado), o mais perto dele.
+/// `areas`: (x, y, largura, altura) lógicos. Sem monitor conhecido, fica como estava.
+pub(crate) fn canto_que_cabe(canto: (f64, f64), tamanho: (f64, f64), areas: &[(f64, f64, f64, f64)]) -> (f64, f64) {
+    let distancia = |&(x, y, l, a): &(f64, f64, f64, f64)| {
+        let dx = (x - canto.0).max(0.0).max(canto.0 - (x + l));
+        let dy = (y - canto.1).max(0.0).max(canto.1 - (y + a));
+        dx * dx + dy * dy
+    };
+    let Some(&(x, y, l, a)) = areas.iter().min_by(|p, q| distancia(p).total_cmp(&distancia(q))) else { return canto };
+    // Janela maior que a área (chat ampliado numa tela pequena): o canto vai ao limite de baixo à direita.
+    let cx = canto.0.min(x + l).max((x + tamanho.0).min(x + l));
+    let cy = canto.1.min(y + a).max((y + tamanho.1).min(y + a));
+    (cx, cy)
+}
+
+/// Área útil (lógica) de cada monitor ligado agora.
+fn areas_uteis(w: &WebviewWindow) -> Vec<(f64, f64, f64, f64)> {
+    w.available_monitors().unwrap_or_default().iter().map(|m| {
+        let (s, r) = (m.scale_factor(), m.work_area());
+        (r.position.x as f64 / s, r.position.y as f64 / s, r.size.width as f64 / s, r.size.height as f64 / s)
+    }).collect()
+}
+
 pub(crate) fn tamanho_do_modo(modo: Modo) -> (f64, f64) {
     match modo {
         Modo::So => SO_O_BUDDY,
@@ -141,8 +167,8 @@ fn canto_padrao(app: &AppHandle) -> (f64, f64) {
 fn posicionar(app: &AppHandle, w: &WebviewWindow) {
     let Some(st) = app.try_state::<Mutex<Estado>>() else { return };
     let (canto, modo, chat, ampliado) = match st.lock() { Ok(g) => (g.canto, g.modo, g.chat, g.ampliado), Err(_) => return };
-    let canto = canto.unwrap_or_else(|| canto_padrao(app));
     let tam = tamanho_do_estado(modo, chat, ampliado);
+    let canto = canto_que_cabe(canto.unwrap_or_else(|| canto_padrao(app)), tam, &areas_uteis(w));
     let (x, y) = posicao_pelo_canto(canto, tam);
     // Só o chat (não ampliado) aumenta pela borda; o buddy sozinho e o balão têm tamanho fixo.
     let redimensiona = modo == Modo::Chat && !ampliado;
@@ -346,5 +372,19 @@ mod testes {
         assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_BALAO), (1000.0 - 300.0, 800.0 - 320.0));
         assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_CHAT), (1000.0 - 400.0, 800.0 - 600.0));
         assert_eq!(posicao_pelo_canto((50.0, 50.0), COM_BALAO), (0.0, 0.0));
+    }
+
+    #[test]
+    fn o_buddy_volta_para_dentro_da_tela() {
+        // Arranjo real do Rodrigo (23/11): notebook 1800×1169 e tela externa 1920×1080 à direita, alinhada embaixo.
+        let telas = [(0.0, 44.0, 1800.0, 1039.0), (1800.0, 89.0, 1920.0, 1080.0)];
+        let guardado = (2557.0, 1276.0); // 107 px abaixo da tela externa
+        assert_eq!(canto_que_cabe(guardado, SO_O_BUDDY, &telas), (2557.0, 1169.0));
+        assert_eq!(canto_que_cabe(guardado, COM_BALAO, &telas), (2557.0, 1169.0), "com o balão, o buddy segue à vista embaixo dele");
+        assert_eq!(canto_que_cabe((900.0, 700.0), COM_BALAO, &telas), (900.0, 700.0), "dentro da tela não mexe");
+        assert_eq!(canto_que_cabe((100.0, 100.0), COM_CHAT, &telas), (400.0, 644.0), "o chat não sai pela esquerda nem por cima");
+        assert_eq!(canto_que_cabe((5000.0, 500.0), SO_O_BUDDY, &telas), (3720.0, 500.0), "tela desligada: vai para a mais perto");
+        assert_eq!(canto_que_cabe((1500.0, 900.0), CHAT_AMPLIADO, &[(0.0, 0.0, 600.0, 700.0)]), (600.0, 700.0), "maior que a tela: canto no limite");
+        assert_eq!(canto_que_cabe(guardado, SO_O_BUDDY, &[]), guardado, "sem monitor conhecido, fica como estava");
     }
 }
