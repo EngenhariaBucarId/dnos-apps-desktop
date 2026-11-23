@@ -263,12 +263,45 @@ fn destino_do_deep_link(base: &str, link: &str) -> Option<String> {
     Some(alvo)
 }
 
+/// O que o X da janela principal faz (0.8.29, 23/11).
+#[derive(Debug, PartialEq)]
+enum AoFechar {
+    /// Windows e Linux: o app inteiro fecha, com a janela do buddy junto.
+    Sair,
+    /// Mac: a janela some e o app segue no Dock, como os outros apps do sistema.
+    Esconder,
+}
+
+/// 23/11 (Rodrigo, Windows): com o buddy de fora ligado, fechar o dn.os destruía a janela principal
+/// mas a janela do buddy segurava o processo; o buddy seguia na tela e o ícone não abria mais nada,
+/// porque a segunda abertura só sabia mostrar uma janela que não existia mais.
+fn ao_fechar_a_principal(mac: bool) -> AoFechar {
+    if mac { AoFechar::Esconder } else { AoFechar::Sair }
+}
+
+/// Traz a janela principal para a frente. `false` quando ela não existe.
+fn mostrar_principal(app: &tauri::AppHandle) -> bool {
+    let Some(janela) = app.get_webview_window("main") else { return false };
+    let _ = janela.show();
+    let _ = janela.unminimize();
+    let _ = janela.set_focus();
+    true
+}
+
+/// Rede de segurança: pediram para abrir e não há janela principal (não deveria acontecer depois da
+/// 0.8.29). Recomeça o app: solta antes a trava de instância única, senão o processo novo acharia
+/// este ainda vivo e sairia sem abrir nada.
+fn recomecar_sem_principal(app: &tauri::AppHandle) -> ! {
+    eprintln!("[dnos-desktop] sem janela principal: recomeçando o app");
+    tauri_plugin_single_instance::destroy(app);
+    app.restart()
+}
+
 fn tratar_deep_links(app: &tauri::AppHandle, links: Vec<String>) {
     let base = url_da_instancia();
     let _ = app.emit("dnos://deep-link", links.clone());
+    if !mostrar_principal(app) { recomecar_sem_principal(app); }
     if let Some(janela) = app.get_webview_window("main") {
-        let _ = janela.show();
-        let _ = janela.set_focus();
         if let Some(alvo) = links.iter().find_map(|l| destino_do_deep_link(&base, l)) {
             if let Ok(u) = url::Url::parse(&alvo) {
                 let _ = janela.navigate(u);
@@ -317,10 +350,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let links: Vec<String> = argv.into_iter().filter(|a| a.starts_with("dnos://")).collect();
             if links.is_empty() {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
+                if !mostrar_principal(app) { recomecar_sem_principal(app); }
             } else {
                 tratar_deep_links(app, links);
             }
@@ -357,7 +387,7 @@ pub fn run() {
 
             let handle_nav = app.handle().clone();
             let host_nav = host.clone();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let principal = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("dn.os")
                 .inner_size(1360.0, 860.0)
                 .min_inner_size(900.0, 600.0)
@@ -390,6 +420,21 @@ pub fn run() {
                     false
                 })
                 .build()?;
+
+            // 0.8.29: o X da janela principal. No Windows e no Linux o app inteiro fecha (a janela do
+            // buddy de fora não segura mais o processo); no Mac a janela some e o Dock a traz de volta.
+            let handle_fechar = app.handle().clone();
+            principal.on_window_event(move |ev| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+                    match ao_fechar_a_principal(cfg!(target_os = "macos")) {
+                        AoFechar::Esconder => {
+                            api.prevent_close();
+                            if let Some(w) = handle_fechar.get_webview_window("main") { let _ = w.hide(); }
+                        }
+                        AoFechar::Sair => handle_fechar.exit(0),
+                    }
+                }
+            });
 
             // Badge de não lidas no ícone: a página emite `dnos://badge` com o
             // número e a casca marca o dock / barra de tarefas. Feito aqui, em
@@ -469,11 +514,17 @@ pub fn run() {
         .build(contexto())
         .expect("erro ao iniciar o dn.os Desktop")
         .run(|app, evento| {
-            // Fechou o app: o Chrome do dn.os fecha junto e a ponte cai.
-            if let tauri::RunEvent::Exit = evento {
-                if let Some(estado) = app.try_state::<meu_chrome::Compartilhado>() {
-                    meu_chrome::parar(app, &estado, "o dn.os fechou");
+            match &evento {
+                // Fechou o app: o Chrome do dn.os fecha junto e a ponte cai.
+                tauri::RunEvent::Exit => {
+                    if let Some(estado) = app.try_state::<meu_chrome::Compartilhado>() {
+                        meu_chrome::parar(app, &estado, "o dn.os fechou");
+                    }
                 }
+                // 0.8.29 (Mac): clique no ícone do Dock com a janela escondida pelo X.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => { let _ = mostrar_principal(app); }
+                _ => {}
             }
         });
 }
@@ -481,6 +532,12 @@ pub fn run() {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn o_x_fecha_tudo_fora_do_mac_e_esconde_no_mac() {
+        assert_eq!(ao_fechar_a_principal(false), AoFechar::Sair, "Windows e Linux: o buddy de fora não segura o app");
+        assert_eq!(ao_fechar_a_principal(true), AoFechar::Esconder, "Mac: a janela some e o Dock a traz de volta");
+    }
 
     #[test]
     fn deep_link_vira_rota_da_instancia() {
