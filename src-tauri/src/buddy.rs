@@ -67,6 +67,8 @@ struct Estado {
     chat: Option<(f64, f64)>,
     /// "Ampliar" ligado: o chat grande, sem mexer no tamanho guardado.
     ampliado: bool,
+    /// Quando a página do chat ganhou o foco pela última vez (ms), para não repetir em seguida.
+    focou_pagina_ms: u64,
 }
 
 fn agora_ms() -> u64 {
@@ -164,6 +166,24 @@ fn canto_padrao(app: &AppHandle) -> (f64, f64) {
     (1200.0, 760.0)
 }
 
+/// 0.8.30 (24/11, Rodrigo, Mac e Windows: "clico no buddy e não aparece o cursor piscando"). A janela nasce
+/// `.focused(false)` e, no Tauri, isso vale também para a página dentro dela; o `set_focus` da janela traz a
+/// janela, não a página. O campo do chat ficava focado no HTML, mas sem cursor e sem receber o teclado, até um
+/// clique dentro (o clique é que dava o foco à página). Agora a página ganha o foco junto (no Mac a WKWebView
+/// vira o first responder; no Windows o WebView2 recebe o MoveFocus), e o site põe o cursor no campo.
+fn focar_o_chat(app: &AppHandle, w: &WebviewWindow) {
+    let agora = agora_ms();
+    if let Some(st) = app.try_state::<Mutex<Estado>>() {
+        if let Ok(mut g) = st.lock() {
+            // No Windows, passar o foco à página mexe no foco da janela; sem isto, um aviso puxaria o outro.
+            if agora.saturating_sub(g.focou_pagina_ms) < 400 { return; }
+            g.focou_pagina_ms = agora;
+        }
+    }
+    let _ = w.set_focus();
+    let _ = AsRef::<tauri::Webview>::as_ref(w).set_focus();
+}
+
 fn posicionar(app: &AppHandle, w: &WebviewWindow) {
     let Some(st) = app.try_state::<Mutex<Estado>>() else { return };
     let (canto, modo, chat, ampliado) = match st.lock() { Ok(g) => (g.canto, g.modo, g.chat, g.ampliado), Err(_) => return };
@@ -202,6 +222,12 @@ fn criar(app: &AppHandle) -> Option<WebviewWindow> {
     // a borda de cima ou da esquerda mexe na posição e no tamanho ao mesmo tempo.
     let h = app.clone();
     w.on_window_event(move |ev| {
+        // Voltou para o chat de fora (Cmd+Tab, Alt+Tab, clique na janela): a página ganha o foco de novo.
+        if let WindowEvent::Focused(true) = ev {
+            let no_chat = h.try_state::<Mutex<Estado>>().and_then(|st| st.lock().ok().map(|g| g.modo == Modo::Chat)).unwrap_or(false);
+            if no_chat { if let Some(w) = h.get_webview_window(JANELA) { focar_o_chat(&h, &w); } }
+            return;
+        }
         let redimensionou = matches!(ev, WindowEvent::Resized(_));
         if !redimensionou && !matches!(ev, WindowEvent::Moved(_)) { return; }
         let Some(w) = h.get_webview_window(JANELA) else { return };
@@ -314,7 +340,7 @@ pub fn instalar(app: &AppHandle) {
         if let Some(w) = h.get_webview_window(JANELA) {
             posicionar(&h, &w);
             // Para digitar no chat, a janela precisa do foco (ela nasce sem roubar o foco de ninguém).
-            if modo == Modo::Chat { let _ = w.set_focus(); }
+            if modo == Modo::Chat { focar_o_chat(&h, &w); }
         }
     });
 
