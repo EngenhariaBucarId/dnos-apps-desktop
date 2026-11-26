@@ -197,6 +197,9 @@ const SCRIPT_INICIAL: &str = r#"
 "#;
 
 /// Rodado ao fim de cada carga de página (ver `on_page_load`).
+/// De quanto em quanto tempo a casca pede à página que confira as não lidas (selo do ícone).
+const INTERVALO_DA_CONFERENCIA_S: u64 = 30;
+
 const SCRIPT_APRESENTACAO: &str = r#"
 (() => {
   // O script inicial rodou nesta página? E a ponte do Tauri chegou?
@@ -396,6 +399,10 @@ pub fn run() {
                 // nunca recebe o `drop` do HTML5 — no web funcionava, no app
                 // não. Desligado, o drop chega à página como no navegador.
                 .disable_drag_drop_handler()
+                // 0.8.32: com a janela escondida ou minimizada o navegador embutido segurava os relógios
+                // da página e derrubava a conexão ao vivo; o selo de não lidas do ícone só mudava ao
+                // voltar para o app. Vale no macOS 14+; nos outros, a conferência abaixo cobre.
+                .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
                 .initialization_script(&script)
                 // Rede de segurança (05/09): na primeira carga da instância a
                 // página às vezes não enxergou __DNOS_DESKTOP__ (o botão Meu
@@ -449,6 +456,15 @@ pub fn run() {
                 if let Some(w) = handle_badge.get_webview_window("main") {
                     let _ = w.set_badge_count(if n > 0 { Some(n as i64) } else { None });
                 }
+            });
+
+            // 0.8.32: a casca pede à página que confira as não lidas de 30 em 30 s (`dnos://conferir`).
+            // O relógio é daqui, do Rust, porque o da página para quando a janela some (Mac antigo,
+            // Windows minimizado). A página relê o banco e manda o número de volta por `dnos://badge`.
+            let handle_conferir = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(INTERVALO_DA_CONFERENCIA_S));
+                let _ = handle_conferir.emit_to("main", "dnos://conferir", ());
             });
 
             // Meu Chrome (fase 2): a página liga/desliga por evento; a casca
