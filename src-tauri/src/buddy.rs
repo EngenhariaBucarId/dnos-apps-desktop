@@ -28,10 +28,11 @@ const ARQUIVO: &str = "buddy-posicao.json";
 /// Só o buddy, com o balão ou o menu em cima dele, e com o chat (lógico). O canto de baixo à direita fica parado.
 const SO_O_BUDDY: (f64, f64) = (136.0, 124.0);
 const COM_BALAO: (f64, f64) = (300.0, 320.0);
-const COM_CHAT: (f64, f64) = (400.0, 600.0);
-/// 0.8.26 (10/11): o chat aumenta pela borda (de cima, da esquerda e o canto) e tem o "Ampliar".
+/// 0.8.31 (26/11, Rodrigo: "vamos colocar como padrão o tamanho estendido"): o chat já abre grande (o antigo
+/// "Ampliar"); aumentar ou diminuir é pela alça da diagonal, e o tamanho que a pessoa deixar fica guardado.
+const COM_CHAT: (f64, f64) = (660.0, 800.0);
+/// 0.8.26 (10/11): o chat aumenta pela borda (de cima, da esquerda e o canto).
 const CHAT_MINIMO: (f64, f64) = (340.0, 420.0);
-const CHAT_AMPLIADO: (f64, f64) = (660.0, 800.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub(crate) enum Modo {
@@ -65,8 +66,6 @@ struct Estado {
     canto: Option<(f64, f64)>,
     /// Tamanho do chat que a pessoa deixou arrastando a borda (lógico).
     chat: Option<(f64, f64)>,
-    /// "Ampliar" ligado: o chat grande, sem mexer no tamanho guardado.
-    ampliado: bool,
     /// Quando a página do chat ganhou o foco pela última vez (ms), para não repetir em seguida.
     focou_pagina_ms: u64,
 }
@@ -83,7 +82,7 @@ fn salvar(app: &AppHandle, canto: Option<(f64, f64)>, chat: Option<(f64, f64)>) 
     if let Some(p) = caminho(app) {
         let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
         let par = |v: Option<(f64, f64)>| v.map(|(a, b)| json!([a, b])).unwrap_or(Value::Null);
-        let _ = std::fs::write(p, json!({ "canto": par(canto), "chat": par(chat) }).to_string());
+        let _ = std::fs::write(p, json!({ "canto": par(canto), "chat_v2": par(chat) }).to_string());
     }
 }
 
@@ -94,7 +93,8 @@ fn carregar(app: &AppHandle) -> (Option<(f64, f64)>, Option<(f64, f64)>) {
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or(Value::Null);
     let par = |k: &str| Some((v[k][0].as_f64()?, v[k][1].as_f64()?));
-    (par("canto"), par("chat").map(limitar_chat))
+    // 0.8.31: "chat_v2". O "chat" das versões antigas era o tamanho pequeno de antes; agora o chat abre grande.
+    (par("canto"), par("chat_v2").map(limitar_chat))
 }
 
 /// Puro: o chat nunca fica menor que o mínimo (o layout do chat quebra abaixo disso).
@@ -102,10 +102,9 @@ pub(crate) fn limitar_chat(t: (f64, f64)) -> (f64, f64) {
     (t.0.max(CHAT_MINIMO.0), t.1.max(CHAT_MINIMO.1))
 }
 
-/// Puro: o tamanho da janela agora. No chat: ampliado, o que a pessoa deixou, ou o padrão.
-pub(crate) fn tamanho_do_estado(modo: Modo, chat: Option<(f64, f64)>, ampliado: bool) -> (f64, f64) {
+/// Puro: o tamanho da janela agora. No chat: o que a pessoa deixou, ou o padrão (grande).
+pub(crate) fn tamanho_do_estado(modo: Modo, chat: Option<(f64, f64)>) -> (f64, f64) {
     match modo {
-        Modo::Chat if ampliado => CHAT_AMPLIADO,
         Modo::Chat => chat.map(limitar_chat).unwrap_or(COM_CHAT),
         outro => tamanho_do_modo(outro),
     }
@@ -133,7 +132,7 @@ pub(crate) fn canto_que_cabe(canto: (f64, f64), tamanho: (f64, f64), areas: &[(f
         dx * dx + dy * dy
     };
     let Some(&(x, y, l, a)) = areas.iter().min_by(|p, q| distancia(p).total_cmp(&distancia(q))) else { return canto };
-    // Janela maior que a área (chat ampliado numa tela pequena): o canto vai ao limite de baixo à direita.
+    // Janela maior que a área (o chat grande numa tela pequena): o canto vai ao limite de baixo à direita.
     let cx = canto.0.min(x + l).max((x + tamanho.0).min(x + l));
     let cy = canto.1.min(y + a).max((y + tamanho.1).min(y + a));
     (cx, cy)
@@ -186,12 +185,12 @@ fn focar_o_chat(app: &AppHandle, w: &WebviewWindow) {
 
 fn posicionar(app: &AppHandle, w: &WebviewWindow) {
     let Some(st) = app.try_state::<Mutex<Estado>>() else { return };
-    let (canto, modo, chat, ampliado) = match st.lock() { Ok(g) => (g.canto, g.modo, g.chat, g.ampliado), Err(_) => return };
-    let tam = tamanho_do_estado(modo, chat, ampliado);
+    let (canto, modo, chat) = match st.lock() { Ok(g) => (g.canto, g.modo, g.chat), Err(_) => return };
+    let tam = tamanho_do_estado(modo, chat);
     let canto = canto_que_cabe(canto.unwrap_or_else(|| canto_padrao(app)), tam, &areas_uteis(w));
     let (x, y) = posicao_pelo_canto(canto, tam);
-    // Só o chat (não ampliado) aumenta pela borda; o buddy sozinho e o balão têm tamanho fixo.
-    let redimensiona = modo == Modo::Chat && !ampliado;
+    // Só o chat aumenta e diminui pela borda; o buddy sozinho e o balão têm tamanho fixo.
+    let redimensiona = modo == Modo::Chat;
     let _ = w.set_resizable(redimensiona);
     let _ = w.set_min_size(if redimensiona { Some(LogicalSize::new(CHAT_MINIMO.0, CHAT_MINIMO.1)) } else { None });
     let _ = w.set_size(LogicalSize::new(tam.0, tam.1));
@@ -238,7 +237,7 @@ fn criar(app: &AppHandle) -> Option<WebviewWindow> {
         let (canto, chat) = match st.lock() {
             Ok(mut g) => {
                 g.canto = Some((pos.x + tam.width, pos.y + tam.height));
-                if redimensionou && g.modo == Modo::Chat && !g.ampliado {
+                if redimensionou && g.modo == Modo::Chat {
                     g.chat = Some(limitar_chat((tam.width, tam.height)));
                 }
                 (g.canto, g.chat)
@@ -333,9 +332,8 @@ pub fn instalar(app: &AppHandle) {
     app.listen_any("dnos://buddy/tamanho", move |e| {
         let carga = ler(&e);
         let modo = modo_pelo_nome(carga["modo"].as_str().unwrap_or("so"));
-        let ampliado = modo == Modo::Chat && carga["ampliado"].as_bool().unwrap_or(false);
         if let Some(st) = h.try_state::<Mutex<Estado>>() {
-            if let Ok(mut g) = st.lock() { g.entende_tamanho = true; g.modo = modo; g.ampliado = ampliado; }
+            if let Ok(mut g) = st.lock() { g.entende_tamanho = true; g.modo = modo; }
         }
         if let Some(w) = h.get_webview_window(JANELA) {
             posicionar(&h, &w);
@@ -384,19 +382,18 @@ mod testes {
 
     #[test]
     fn o_chat_aumenta_mas_nao_encolhe_demais() {
-        assert_eq!(tamanho_do_estado(Modo::Chat, None, false), COM_CHAT);
-        assert_eq!(tamanho_do_estado(Modo::Chat, Some((520.0, 700.0)), false), (520.0, 700.0), "o tamanho que a pessoa deixou");
-        assert_eq!(tamanho_do_estado(Modo::Chat, Some((100.0, 100.0)), false), CHAT_MINIMO, "nunca abaixo do mínimo");
-        assert_eq!(tamanho_do_estado(Modo::Chat, Some((520.0, 700.0)), true), CHAT_AMPLIADO, "ampliado não perde o guardado");
-        assert_eq!(tamanho_do_estado(Modo::So, Some((520.0, 700.0)), true), SO_O_BUDDY);
-        assert_eq!(tamanho_do_estado(Modo::Balao, None, false), COM_BALAO);
+        assert_eq!(tamanho_do_estado(Modo::Chat, None), COM_CHAT, "abre grande");
+        assert_eq!(tamanho_do_estado(Modo::Chat, Some((520.0, 700.0))), (520.0, 700.0), "o tamanho que a pessoa deixou");
+        assert_eq!(tamanho_do_estado(Modo::Chat, Some((100.0, 100.0))), CHAT_MINIMO, "nunca abaixo do mínimo");
+        assert_eq!(tamanho_do_estado(Modo::So, Some((520.0, 700.0))), SO_O_BUDDY);
+        assert_eq!(tamanho_do_estado(Modo::Balao, None), COM_BALAO);
     }
 
     #[test]
     fn o_canto_de_baixo_a_direita_fica_parado() {
         assert_eq!(posicao_pelo_canto((1000.0, 800.0), SO_O_BUDDY), (1000.0 - 136.0, 800.0 - 124.0));
         assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_BALAO), (1000.0 - 300.0, 800.0 - 320.0));
-        assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_CHAT), (1000.0 - 400.0, 800.0 - 600.0));
+        assert_eq!(posicao_pelo_canto((1000.0, 800.0), COM_CHAT), (1000.0 - 660.0, 800.0 - 800.0));
         assert_eq!(posicao_pelo_canto((50.0, 50.0), COM_BALAO), (0.0, 0.0));
     }
 
@@ -408,9 +405,9 @@ mod testes {
         assert_eq!(canto_que_cabe(guardado, SO_O_BUDDY, &telas), (2557.0, 1169.0));
         assert_eq!(canto_que_cabe(guardado, COM_BALAO, &telas), (2557.0, 1169.0), "com o balão, o buddy segue à vista embaixo dele");
         assert_eq!(canto_que_cabe((900.0, 700.0), COM_BALAO, &telas), (900.0, 700.0), "dentro da tela não mexe");
-        assert_eq!(canto_que_cabe((100.0, 100.0), COM_CHAT, &telas), (400.0, 644.0), "o chat não sai pela esquerda nem por cima");
+        assert_eq!(canto_que_cabe((100.0, 100.0), COM_CHAT, &telas), (660.0, 844.0), "o chat não sai pela esquerda nem por cima");
         assert_eq!(canto_que_cabe((5000.0, 500.0), SO_O_BUDDY, &telas), (3720.0, 500.0), "tela desligada: vai para a mais perto");
-        assert_eq!(canto_que_cabe((1500.0, 900.0), CHAT_AMPLIADO, &[(0.0, 0.0, 600.0, 700.0)]), (600.0, 700.0), "maior que a tela: canto no limite");
+        assert_eq!(canto_que_cabe((1500.0, 900.0), COM_CHAT, &[(0.0, 0.0, 600.0, 700.0)]), (600.0, 700.0), "maior que a tela: canto no limite");
         assert_eq!(canto_que_cabe(guardado, SO_O_BUDDY, &[]), guardado, "sem monitor conhecido, fica como estava");
     }
 }
