@@ -13,6 +13,7 @@
 //!                    → `dnos://buddy/esconder` { minutos }      (some por um tempo)
 //!                    → `dnos://buddy/balao` { aberto }          (cresce para o balão caber; 0.8.24)
 //!                    → `dnos://buddy/tamanho` { modo }          (0.8.25: "so" | "balao" | "chat")
+//!                    → `dnos://buddy/redimensionar` { largura, altura }  (0.8.33: a alça, enquanto arrasta)
 //!
 //! 0.8.25 (10/11, pedido do Rodrigo): o clique no buddy abre um chat ali mesmo, e a janela cresce
 //! para ele (e ganha o foco, para dar para digitar). "Abrir no dn.os" segue pelo `abrir`.
@@ -33,6 +34,7 @@ const COM_BALAO: (f64, f64) = (300.0, 320.0);
 const COM_CHAT: (f64, f64) = (660.0, 800.0);
 /// 0.8.26 (10/11): o chat aumenta pela borda (de cima, da esquerda e o canto).
 const CHAT_MINIMO: (f64, f64) = (340.0, 420.0);
+const CHAT_MAXIMO: f64 = 4000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub(crate) enum Modo {
@@ -52,7 +54,7 @@ pub(crate) fn modo_pelo_nome(nome: &str) -> Modo {
 }
 const MARGEM: f64 = 24.0;
 /// A página da janela do buddy sabe o que esta casca faz (a janela não recebe o script da principal).
-const SCRIPT_DA_JANELA: &str = r#"window.__DNOS_DESKTOP__ = Object.assign(window.__DNOS_DESKTOP__ || {}, { versao: "__DNOS_VERSAO__", buddyFora: true, buddyChat: true, buddyRedimensionar: true, janelaDoBuddy: true });"#;
+const SCRIPT_DA_JANELA: &str = r#"window.__DNOS_DESKTOP__ = Object.assign(window.__DNOS_DESKTOP__ || {}, { versao: "__DNOS_VERSAO__", buddyFora: true, buddyChat: true, buddyRedimensionar: true, buddyTamanhoDoChat: true, janelaDoBuddy: true });"#;
 
 #[derive(Default)]
 struct Estado {
@@ -97,9 +99,10 @@ fn carregar(app: &AppHandle) -> (Option<(f64, f64)>, Option<(f64, f64)>) {
     (par("canto"), par("chat_v2").map(limitar_chat))
 }
 
-/// Puro: o chat nunca fica menor que o mínimo (o layout do chat quebra abaixo disso).
+/// Puro: o chat nunca fica menor que o mínimo (o layout do chat quebra abaixo disso) nem absurdo de grande
+/// (a página limita à tela; isto só protege de um pedido torto).
 pub(crate) fn limitar_chat(t: (f64, f64)) -> (f64, f64) {
-    (t.0.max(CHAT_MINIMO.0), t.1.max(CHAT_MINIMO.1))
+    (t.0.clamp(CHAT_MINIMO.0, CHAT_MAXIMO), t.1.clamp(CHAT_MINIMO.1, CHAT_MAXIMO))
 }
 
 /// Puro: o tamanho da janela agora. No chat: o que a pessoa deixou, ou o padrão (grande).
@@ -342,6 +345,26 @@ pub fn instalar(app: &AppHandle) {
         }
     });
 
+    // 0.8.33 (27/11, Rodrigo no Mac: "a alça não funcionou, nada acontece"): no Mac o redimensionar pela borda
+    // do sistema (`startResizeDragging`) não existe. A página mede o quanto o mouse andou e manda o tamanho a cada
+    // quadro; aqui ele vira o tamanho do chat e a janela se reposiciona com o canto de baixo à direita parado
+    // (o mesmo `posicionar` de sempre, que também a mantém dentro da tela). O Resized que vem depois guarda.
+    let h = app.clone();
+    app.listen_any("dnos://buddy/redimensionar", move |e| {
+        let carga = ler(&e);
+        let (Some(largura), Some(altura)) = (carga["largura"].as_f64(), carga["altura"].as_f64()) else { return };
+        let Some(st) = h.try_state::<Mutex<Estado>>() else { return };
+        match st.lock() {
+            Ok(mut g) if g.modo == Modo::Chat => g.chat = Some(limitar_chat((largura, altura))),
+            _ => return,
+        }
+        // Tamanho e posição na mesma volta da thread principal: os eventos de Resized/Moved já leem o lugar final.
+        let h2 = h.clone();
+        let _ = h.run_on_main_thread(move || {
+            if let Some(w) = h2.get_webview_window(JANELA) { posicionar(&h2, &w); }
+        });
+    });
+
     // Na janela principal, o buddy de dentro assume; fora dela, este aparece.
     if let Some(main) = app.get_webview_window("main") {
         let h = app.clone();
@@ -385,6 +408,7 @@ mod testes {
         assert_eq!(tamanho_do_estado(Modo::Chat, None), COM_CHAT, "abre grande");
         assert_eq!(tamanho_do_estado(Modo::Chat, Some((520.0, 700.0))), (520.0, 700.0), "o tamanho que a pessoa deixou");
         assert_eq!(tamanho_do_estado(Modo::Chat, Some((100.0, 100.0))), CHAT_MINIMO, "nunca abaixo do mínimo");
+        assert_eq!(limitar_chat((9000.0, 9000.0)), (CHAT_MAXIMO, CHAT_MAXIMO), "pedido torto não vira janela gigante");
         assert_eq!(tamanho_do_estado(Modo::So, Some((520.0, 700.0))), SO_O_BUDDY);
         assert_eq!(tamanho_do_estado(Modo::Balao, None), COM_BALAO);
     }
